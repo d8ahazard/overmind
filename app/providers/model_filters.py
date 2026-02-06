@@ -29,7 +29,7 @@ def is_chat_model(provider: str, model_id: str) -> bool:
     if any(token in name for token in _BLOCKED_TOKENS) or is_image_model(model_id):
         return False
     if provider == "openai":
-        if any(token in name for token in ["instruct", "davinci", "babbage", "ada"]):
+        if any(token in name for token in ["instruct", "davinci", "babbage", "ada", "codex"]):
             return False
         return (
             name.startswith("gpt-")

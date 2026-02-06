@@ -3,6 +3,7 @@ import inspect
 from typing import Any, Dict, List
 
 from app.providers.base import ModelInfo, ProviderBase, ProviderError
+from app.providers.model_filters import filter_chat_models
 from app.core.secrets import SecretsBroker
 from app.providers.openai_provider import OpenAIProvider
 from app.providers.anthropic_provider import AnthropicProvider
@@ -81,7 +82,10 @@ class ModelRegistry:
         models = await self.list_models(provider, enabled=[provider])
         if not models:
             return None
-        ordered = sorted((m.id for m in models), key=_manager_model_rank, reverse=True)
+        chat_models = filter_chat_models(provider, [m.id for m in models])
+        if not chat_models:
+            return None
+        ordered = sorted(chat_models, key=_manager_model_rank, reverse=True)
         return ordered[0] if ordered else None
 
 
