@@ -23,6 +23,22 @@ class ArtifactStore:
             handle.write(json.dumps(event, ensure_ascii=True) + "\n")
         return path
 
+    def read_events(self, run_id: int) -> list[dict]:
+        path = self._run_dir(run_id) / "events" / "events.jsonl"
+        if not path.exists():
+            return []
+        messages: list[dict] = []
+        try:
+            contents = path.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            return []
+        for line in contents:
+            try:
+                messages.append(json.loads(line))
+            except Exception:
+                continue
+        return messages
+
     def write_chat(self, run_id: int, role: str, message: Dict[str, Any]) -> Path:
         self._ensure_dirs(run_id)
         path = self._run_dir(run_id) / "chats" / f"{role}.jsonl"

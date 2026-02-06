@@ -27,7 +27,7 @@ class ProviderBase:
     async def get_balance(self) -> float | None:
         return None
 
-    async def list_models(self) -> List[ModelInfo]:
+    async def list_models(self, api_key: str | None = None) -> List[ModelInfo]:
         raise NotImplementedError
 
     async def invoke_model(

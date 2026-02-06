@@ -51,3 +51,17 @@ class SecretsBroker:
             self._tokens.pop(token, None)
             return None
         return secret
+
+    def get_provider_key(self, provider: str) -> Optional[str]:
+        if not self._master_key:
+            return None
+        with get_session() as session:
+            stored = session.exec(
+                select(ProviderKey).where(ProviderKey.provider == provider)
+            ).first()
+        if not stored:
+            return None
+        try:
+            return decrypt_value(stored.encrypted_key, self._master_key)
+        except Exception:
+            return None

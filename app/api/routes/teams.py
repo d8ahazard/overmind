@@ -6,7 +6,8 @@ from fastapi import APIRouter, HTTPException, Request
 from sqlmodel import select
 
 from app.core.presets import PRESETS, build_agents
-from app.db.models import Team
+from app.providers.model_registry import ModelRegistry
+from app.db.models import ProjectSetting, Team
 from app.db.session import get_session
 
 router = APIRouter()
@@ -34,6 +35,14 @@ async def _generate_profile(request: Request, role: str, provider: str, model: s
         return None, None
 
 
+@router.get("/presets")
+def list_presets() -> List[dict]:
+    return [
+        {"name": preset.name, "roles": preset.roles}
+        for preset in PRESETS.values()
+    ]
+
+
 @router.post("/", response_model=Team)
 def create_team(team: Team) -> Team:
     with get_session() as session:
@@ -58,14 +67,6 @@ def get_team(team_id: int) -> Team:
         return team
 
 
-@router.get("/presets")
-def list_presets() -> List[dict]:
-    return [
-        {"name": preset.name, "roles": preset.roles}
-        for preset in PRESETS.values()
-    ]
-
-
 @router.post("/{team_id}/apply-preset")
 async def apply_preset(team_id: int, payload: dict, request: Request) -> dict:
     size = payload.get("size", "medium")
@@ -81,6 +82,15 @@ async def apply_preset(team_id: int, payload: dict, request: Request) -> dict:
         if not team:
             raise HTTPException(status_code=404, detail="Team not found")
         agents = build_agents(team_id, size, provider, model)
+        setting = session.exec(
+            select(ProjectSetting).where(ProjectSetting.project_id == team.project_id)
+        ).first()
+        default_scopes = (setting.default_tool_scopes if setting else None) or "system:run"
+        manager_model = await ModelRegistry(request.app.state.secrets_broker).suggest_manager_model(provider)
+        for agent in agents:
+            agent.permissions = default_scopes
+            if manager_model and agent.role in {"Product Owner", "Delivery Manager", "Release Manager"}:
+                agent.model = manager_model
         if generate_profiles:
             for agent in agents:
                 display_name, personality = await _generate_profile(

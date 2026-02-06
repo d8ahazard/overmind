@@ -25,6 +25,25 @@ type Preset = {
   roles: string[];
 };
 
+type ModelInfo = {
+  id: string;
+  provider: string;
+};
+
+type RecommendedEntry = {
+  models?: {
+    text?: string[];
+    code?: string[];
+    image?: string[];
+  };
+  defaults?: {
+    manager?: string | null;
+    worker?: string | null;
+    code?: string | null;
+    image?: string | null;
+  };
+};
+
 export default function TeamBuilder() {
   const [teams, setTeams] = useState([] as Team[]);
   const [agents, setAgents] = useState([] as AgentConfig[]);
@@ -43,8 +62,12 @@ export default function TeamBuilder() {
   const [presetProvider, setPresetProvider] = useState("openai");
   const [presetModel, setPresetModel] = useState("gpt-4");
   const [presets, setPresets] = useState([] as Preset[]);
+  const [models, setModels] = useState([] as ModelInfo[]);
+  const [providers, setProviders] = useState([] as string[]);
+  const [recommended, setRecommended] = useState({} as Record<string, RecommendedEntry>);
   const [error, setError] = useState(null as string | null);
   const [showAllAgents, setShowAllAgents] = useState(false);
+  const [showAllModels, setShowAllModels] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -68,6 +91,18 @@ export default function TeamBuilder() {
       try {
         const fetchedPresets = (await apiGet("/teams/presets")) as Preset[];
         setPresets(fetchedPresets);
+      } catch (err) {
+        setError((err as Error).message);
+      }
+      try {
+        const fetchedModels = (await apiGet("/models?only_enabled=true")) as ModelInfo[];
+        setModels(fetchedModels);
+        setProviders([...new Set(fetchedModels.map((item: ModelInfo) => item.provider))]);
+        const rec = (await apiGet("/models/recommended?only_enabled=true")) as Record<
+          string,
+          RecommendedEntry
+        >;
+        setRecommended(rec);
       } catch (err) {
         setError((err as Error).message);
       }
@@ -104,6 +139,14 @@ export default function TeamBuilder() {
 
   const createAgent = async () => {
     setError(null);
+    if (!teamId) {
+      setError("Select a team before adding an agent.");
+      return;
+    }
+    if (!provider || !model) {
+      setError("Select a provider and model before adding an agent.");
+      return;
+    }
     try {
       const created = (await apiPost("/agents", {
         team_id: teamId,
@@ -138,6 +181,10 @@ export default function TeamBuilder() {
       setError("Create or select a valid team before applying a preset.");
       return;
     }
+    if (!presetProvider || !presetModel) {
+      setError("Select a provider and model before applying a preset.");
+      return;
+    }
     try {
       await apiPost(`/teams/${teamId}/apply-preset`, {
         size: presetSize,
@@ -152,6 +199,10 @@ export default function TeamBuilder() {
 
   const createTeamFromPreset = async () => {
     setError(null);
+    if (!presetProvider || !presetModel) {
+      setError("Select a provider and model before applying a preset.");
+      return;
+    }
     try {
       const created = (await apiPost("/teams", {
         project_id: projectId,
@@ -185,6 +236,94 @@ export default function TeamBuilder() {
     } catch (err) {
       setError((err as Error).message);
     }
+  };
+
+  const modelsForProvider = (providerName: string) =>
+    models
+      .filter((item: ModelInfo) => item.provider === providerName)
+      .map((item: ModelInfo) => item.id);
+  const hasProviders = providers.length > 0;
+
+  const getRecommendedModels = (providerName: string, roleName: string) => {
+    const entry = recommended?.[providerName];
+    const available = entry?.models ?? {};
+    const roleLower = roleName.toLowerCase();
+    if (roleLower.includes("developer") || roleLower.includes("engineer") || roleLower.includes("tech")) {
+      return available.code?.length ? available.code : available.text ?? [];
+    }
+    if (roleLower.includes("designer") || roleLower.includes("artist")) {
+      return available.image?.length ? available.image : available.text ?? [];
+    }
+    return available.text ?? [];
+  };
+
+  const modelOptionsFor = (providerName: string, roleName: string, currentValue: string) => {
+    const base = showAllModels
+      ? modelsForProvider(providerName)
+      : getRecommendedModels(providerName, roleName);
+    const merged = [...base, currentValue].filter(Boolean);
+    return Array.from(new Set(merged));
+  };
+
+  const presetModelOptions = modelOptionsFor(presetProvider, "Manager", presetModel);
+  const agentModelOptions = modelOptionsFor(provider, role, model);
+  const hasModelsForPreset = presetModelOptions.length > 0;
+  const hasModelsForAgent = agentModelOptions.length > 0;
+
+  const suggestModel = (roleName: string, providerName: string) => {
+    const defaults = recommended?.[providerName]?.defaults;
+    const roleLower = roleName.toLowerCase();
+    if (defaults) {
+      if (
+        roleLower.includes("manager") ||
+        roleLower.includes("owner") ||
+        roleLower.includes("lead") ||
+        roleLower.includes("architect") ||
+        roleLower.includes("product") ||
+        roleLower.includes("delivery") ||
+        roleLower.includes("release")
+      ) {
+        return defaults.manager ?? defaults.worker ?? "gpt-4";
+      }
+      if (
+        roleLower.includes("developer") ||
+        roleLower.includes("engineer") ||
+        roleLower.includes("tech")
+      ) {
+        return defaults.code ?? defaults.worker ?? "gpt-4";
+      }
+      if (roleLower.includes("designer") || roleLower.includes("artist")) {
+        return defaults.image ?? defaults.worker ?? "gpt-4";
+      }
+      return defaults.worker ?? "gpt-4";
+    }
+    const available = modelsForProvider(providerName);
+    if (!available.length) {
+      return "gpt-4";
+    }
+    const wantsCode = roleLower.includes("developer") || roleLower.includes("tech lead");
+    const wantsPlan =
+      roleLower.includes("product owner") ||
+      roleLower.includes("delivery") ||
+      roleLower.includes("release") ||
+      roleLower.includes("planner");
+    if (wantsCode) {
+      const codex = available.find((item: string) => item.toLowerCase().includes("codex"));
+      if (codex) {
+        return codex;
+      }
+      const codey = available.find((item: string) => item.toLowerCase().includes("code"));
+      if (codey) {
+        return codey;
+      }
+    }
+    if (wantsPlan) {
+      const max = available.find((item: string) => item.toLowerCase().includes("max"));
+      if (max) {
+        return max;
+      }
+    }
+    return available[0];
   };
 
   return (
@@ -244,11 +383,42 @@ export default function TeamBuilder() {
               </>
             )}
           </select>
-          <input
-            value={presetProvider}
-            onChange={(e) => setPresetProvider(e.target.value)}
-          />
-          <input value={presetModel} onChange={(e) => setPresetModel(e.target.value)} />
+          {hasProviders ? (
+            <select
+              value={presetProvider}
+              onChange={(e) => {
+                setPresetProvider(e.target.value);
+                setPresetModel(suggestModel("Developer", e.target.value));
+              }}
+            >
+              {providers.map((providerName: string) => (
+                <option key={providerName} value={providerName}>
+                  {providerName}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              value={presetProvider}
+              onChange={(e) => setPresetProvider(e.target.value)}
+              placeholder="Provider"
+            />
+          )}
+          {hasModelsForPreset ? (
+            <select value={presetModel} onChange={(e) => setPresetModel(e.target.value)}>
+              {presetModelOptions.map((modelId: string) => (
+                <option key={modelId} value={modelId}>
+                  {modelId}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              value={presetModel}
+              onChange={(e) => setPresetModel(e.target.value)}
+              placeholder="Model"
+            />
+          )}
           <button onClick={applyPreset} disabled={!teams.length}>
             Apply Preset
           </button>
@@ -287,22 +457,67 @@ export default function TeamBuilder() {
           onChange={(e) => setAvatarUrl(e.target.value)}
           placeholder="Avatar URL"
         />
-          <input value={provider} onChange={(e) => setProvider(e.target.value)} />
-          <input value={model} onChange={(e) => setModel(e.target.value)} />
+          {hasProviders ? (
+            <select
+              value={provider}
+              onChange={(e) => {
+                setProvider(e.target.value);
+                setModel(suggestModel(role, e.target.value));
+              }}
+            >
+              {providers.map((providerName: string) => (
+                <option key={providerName} value={providerName}>
+                  {providerName}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              value={provider}
+              onChange={(e) => setProvider(e.target.value)}
+              placeholder="Provider"
+            />
+          )}
+          {hasModelsForAgent ? (
+            <select value={model} onChange={(e) => setModel(e.target.value)}>
+              {agentModelOptions.map((modelId: string) => (
+                <option key={modelId} value={modelId}>
+                  {modelId}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder="Model"
+            />
+          )}
           <button onClick={createAgent}>Add Agent</button>
         </div>
       </div>
       <div className="card">
         <h3>Agents</h3>
-        <label className="pill" style={{ marginBottom: 8 }}>
-          <input
-            type="checkbox"
-            checked={showAllAgents}
-            onChange={(e) => setShowAllAgents(e.target.checked)}
-            style={{ marginRight: 6 }}
-          />
-          Show all teams
-        </label>
+        <div className="row" style={{ gap: 12, flexWrap: "wrap", marginBottom: 8 }}>
+          <label className="pill">
+            <input
+              type="checkbox"
+              checked={showAllAgents}
+              onChange={(e) => setShowAllAgents(e.target.checked)}
+              style={{ marginRight: 6 }}
+            />
+            Show all teams
+          </label>
+          <label className="pill">
+            <input
+              type="checkbox"
+              checked={showAllModels}
+              onChange={(e) => setShowAllModels(e.target.checked)}
+              style={{ marginRight: 6 }}
+            />
+            Show all models (slow)
+          </label>
+        </div>
         <ul>
           {agents
             .filter((agent: AgentConfig) =>
@@ -344,32 +559,76 @@ export default function TeamBuilder() {
                     onBlur={() => updateAgent(agent)}
                     placeholder="Role"
                   />
-                  <input
-                    value={agent.provider}
-                    onChange={(e) =>
-                      setAgents((prev: AgentConfig[]) =>
-                        prev.map((item: AgentConfig) =>
-                          item.id === agent.id
-                            ? { ...item, provider: e.target.value }
-                            : item
+                  {hasProviders ? (
+                    <select
+                      value={agent.provider}
+                      onChange={(e) =>
+                        setAgents((prev: AgentConfig[]) =>
+                          prev.map((item: AgentConfig) =>
+                            item.id === agent.id
+                              ? { ...item, provider: e.target.value }
+                              : item
+                          )
                         )
-                      )
-                    }
-                    onBlur={() => updateAgent(agent)}
-                    placeholder="Provider"
-                  />
-                  <input
-                    value={agent.model}
-                    onChange={(e) =>
-                      setAgents((prev: AgentConfig[]) =>
-                        prev.map((item: AgentConfig) =>
-                          item.id === agent.id ? { ...item, model: e.target.value } : item
+                      }
+                      onBlur={() => updateAgent(agent)}
+                    >
+                      {providers.map((providerName: string) => (
+                        <option key={providerName} value={providerName}>
+                          {providerName}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      value={agent.provider}
+                      onChange={(e) =>
+                        setAgents((prev: AgentConfig[]) =>
+                          prev.map((item: AgentConfig) =>
+                            item.id === agent.id
+                              ? { ...item, provider: e.target.value }
+                              : item
+                          )
                         )
+                      }
+                      onBlur={() => updateAgent(agent)}
+                      placeholder="Provider"
+                    />
+                  )}
+                  {modelOptionsFor(agent.provider, agent.role, agent.model).length ? (
+                    <select
+                      value={agent.model}
+                      onChange={(e) =>
+                        setAgents((prev: AgentConfig[]) =>
+                          prev.map((item: AgentConfig) =>
+                            item.id === agent.id ? { ...item, model: e.target.value } : item
+                          )
+                        )
+                      }
+                      onBlur={() => updateAgent(agent)}
+                    >
+                      {modelOptionsFor(agent.provider, agent.role, agent.model).map(
+                        (modelId: string) => (
+                        <option key={modelId} value={modelId}>
+                          {modelId}
+                        </option>
                       )
-                    }
-                    onBlur={() => updateAgent(agent)}
-                    placeholder="Model"
-                  />
+                      )}
+                    </select>
+                  ) : (
+                    <input
+                      value={agent.model}
+                      onChange={(e) =>
+                        setAgents((prev: AgentConfig[]) =>
+                          prev.map((item: AgentConfig) =>
+                            item.id === agent.id ? { ...item, model: e.target.value } : item
+                          )
+                        )
+                      }
+                      onBlur={() => updateAgent(agent)}
+                      placeholder="Model"
+                    />
+                  )}
                   <button onClick={() => updateAgent(agent)}>Save</button>
                   {agent.id && (
                     <button

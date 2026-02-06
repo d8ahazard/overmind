@@ -6,10 +6,27 @@ from sqlmodel import select
 from pathlib import Path
 
 from app.core.project_registry import project_data_dir, project_db_url
-from app.db.models import Project
+from app.db.models import Project, ProjectSetting
 from app.db.session import get_session, init_db
 
 router = APIRouter()
+
+
+def _get_setting(session, project_id: int) -> ProjectSetting:
+    setting = session.exec(
+        select(ProjectSetting).where(ProjectSetting.project_id == project_id)
+    ).first()
+    if not setting:
+        setting = ProjectSetting(
+            project_id=project_id,
+            allow_all_tools=False,
+            allow_high_risk=False,
+            default_tool_scopes=None,
+        )
+        session.add(setting)
+        session.commit()
+        session.refresh(setting)
+    return setting
 
 
 @router.post("/")
@@ -97,6 +114,9 @@ def activate_project(project_id: int, request: Request) -> dict:
                     )
                 )
                 session.commit()
+            setting = _get_setting(session, 0)
+            request.app.state.policy_engine.allow_all_tools = setting.allow_all_tools
+            request.app.state.policy_engine.allow_high_risk = setting.allow_high_risk
         return {"status": "ok", "active_project_id": 0}
     entry = registry.get_project(project_id)
     if not entry:
@@ -120,5 +140,52 @@ def activate_project(project_id: int, request: Request) -> dict:
             )
             session.add(project)
             session.commit()
+        setting = _get_setting(session, entry.id)
+        request.app.state.policy_engine.allow_all_tools = setting.allow_all_tools
+        request.app.state.policy_engine.allow_high_risk = setting.allow_high_risk
 
     return {"status": "ok", "active_project_id": entry.id}
+
+
+@router.get("/settings")
+def get_project_settings(request: Request) -> dict:
+    project_id = request.app.state.active_project_id
+    if project_id is None:
+        raise HTTPException(status_code=404, detail="No active project")
+    with get_session() as session:
+        setting = _get_setting(session, project_id)
+    return {
+        "project_id": project_id,
+        "allow_all_tools": setting.allow_all_tools,
+        "allow_high_risk": setting.allow_high_risk,
+        "default_tool_scopes": setting.default_tool_scopes,
+    }
+
+
+@router.put("/settings")
+def update_project_settings(payload: dict, request: Request) -> dict:
+    project_id = request.app.state.active_project_id
+    if project_id is None:
+        raise HTTPException(status_code=404, detail="No active project")
+    allow_all_tools = payload.get("allow_all_tools")
+    allow_high_risk = payload.get("allow_high_risk")
+    default_tool_scopes = payload.get("default_tool_scopes")
+    with get_session() as session:
+        setting = _get_setting(session, project_id)
+        if allow_all_tools is not None:
+            setting.allow_all_tools = bool(allow_all_tools)
+        if allow_high_risk is not None:
+            setting.allow_high_risk = bool(allow_high_risk)
+        if default_tool_scopes is not None:
+            setting.default_tool_scopes = str(default_tool_scopes) or None
+        session.add(setting)
+        session.commit()
+        session.refresh(setting)
+    request.app.state.policy_engine.allow_all_tools = setting.allow_all_tools
+    request.app.state.policy_engine.allow_high_risk = setting.allow_high_risk
+    return {
+        "project_id": project_id,
+        "allow_all_tools": setting.allow_all_tools,
+        "allow_high_risk": setting.allow_high_risk,
+        "default_tool_scopes": setting.default_tool_scopes,
+    }

@@ -1,11 +1,13 @@
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from sqlmodel import select
 
 from app.db.models import AgentConfig
 from app.db.session import get_session
+from app.providers.model_registry import ModelRegistry
+from app.core.chat_router import MANAGER_ROLES
 
 router = APIRouter()
 
@@ -62,6 +64,24 @@ def update_agent(agent_id: int, data: AgentUpdate) -> AgentConfig:
         session.commit()
         session.refresh(agent)
         return agent
+
+
+@router.post("/{agent_id}/refresh-model")
+async def refresh_agent_model(agent_id: int, request: Request) -> dict:
+    with get_session() as session:
+        agent = session.get(AgentConfig, agent_id)
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        if agent.role not in MANAGER_ROLES:
+            return {"status": "skipped", "reason": "not_manager"}
+        registry = ModelRegistry(request.app.state.secrets_broker)
+        model = await registry.suggest_manager_model(agent.provider)
+        if model:
+            agent.model = model
+            session.add(agent)
+            session.commit()
+            return {"status": "ok", "model": model}
+        return {"status": "skipped", "reason": "no_model"}
 
 
 @router.get("/{agent_id}", response_model=AgentConfig)

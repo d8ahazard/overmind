@@ -3,6 +3,8 @@ from fastapi import APIRouter, Request
 from app.core.events import Event
 from app.core.tool_broker import ToolRequest
 from app.integrations.mcp_client import MCPClient
+from app.db.models import Run
+from sqlmodel import select
 
 router = APIRouter()
 
@@ -59,6 +61,15 @@ async def mcp_call(request: Request, payload: dict) -> dict:
     if "mcp.call" not in broker.executors:
         broker.register("mcp.call", _executor)
 
+    run_id = payload.get("run_id")
+    if not run_id:
+        with get_session() as session:
+            latest = session.exec(
+                select(Run)
+                .where(Run.project_id == request.app.state.active_project_id)
+                .order_by(Run.id.desc())
+            ).first()
+            run_id = latest.id if latest else None
     tool_request = ToolRequest(
         tool_name="mcp.call",
         arguments={
@@ -71,6 +82,7 @@ async def mcp_call(request: Request, payload: dict) -> dict:
         actor=payload.get("actor", "system"),
         approved=bool(payload.get("approved")),
         approval_id=payload.get("approval_id"),
+        run_id=run_id,
     )
     actor_scopes = payload.get("actor_scopes", [])
     if isinstance(actor_scopes, str):

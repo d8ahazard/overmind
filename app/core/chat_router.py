@@ -8,6 +8,7 @@ from app.db.session import get_session
 
 
 MANAGER_ROLES = {"Product Owner", "Delivery Manager", "Release Manager"}
+TEAM_MENTIONS = {"team", "all", "everyone"}
 
 
 class ChatRouter:
@@ -19,6 +20,8 @@ class ChatRouter:
         with get_session() as session:
             agents = list(session.exec(select(AgentConfig).where(AgentConfig.team_id == team_id)))
         if mention:
+            if mention in TEAM_MENTIONS:
+                return agents
             for agent in agents:
                 display = (agent.display_name or "").lower()
                 role = agent.role.lower()

@@ -15,10 +15,11 @@ class GroqProvider(ProviderBase):
     def validate_key(self) -> bool:
         return bool(self.api_key)
 
-    async def list_models(self) -> List[ModelInfo]:
-        if not self.api_key:
+    async def list_models(self, api_key: str | None = None) -> List[ModelInfo]:
+        key = api_key or self.api_key
+        if not key:
             return []
-        headers = {"Authorization": f"Bearer {self.api_key}"}
+        headers = {"Authorization": f"Bearer {key}"}
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get("https://api.groq.com/openai/v1/models", headers=headers)
             if response.status_code != 200:

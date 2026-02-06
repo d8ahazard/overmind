@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { apiDelete, apiGet, apiPost } from "../lib/api";
+import { apiDelete, apiGet, apiPost, apiPut } from "../lib/api";
 import Notifications from "../components/Notifications";
 
 type MCPStatus = {
@@ -29,10 +29,39 @@ type AgentConfig = {
   model: string;
 };
 
+type ModelInfo = {
+  id: string;
+  provider: string;
+};
+
+type RecommendedEntry = {
+  models?: {
+    text?: string[];
+    code?: string[];
+    image?: string[];
+  };
+  defaults?: {
+    manager?: string | null;
+    worker?: string | null;
+    code?: string | null;
+    image?: string | null;
+  };
+};
+
+type ProjectSettings = {
+  project_id: number;
+  allow_all_tools: boolean;
+  allow_high_risk: boolean;
+  default_tool_scopes?: string | null;
+};
+
 export default function Settings() {
   const [providers, setProviders] = useState([] as string[]);
-  const [models, setModels] = useState([] as string[]);
+  const [models, setModels] = useState([] as ModelInfo[]);
+  const [providersByKey, setProvidersByKey] = useState([] as string[]);
   const [mcpStatus, setMcpStatus] = useState(null as MCPStatus | null);
+  const [recommended, setRecommended] = useState({} as Record<string, RecommendedEntry>);
+  const [showAllModels, setShowAllModels] = useState(false);
   const [error, setError] = useState(null as string | null);
   const [templates, setTemplates] = useState([] as PersonalityTemplate[]);
   const [templateRole, setTemplateRole] = useState("Developer");
@@ -48,13 +77,20 @@ export default function Settings() {
   const [agents, setAgents] = useState([] as AgentConfig[]);
   const [editAgentId, setEditAgentId] = useState(null as number | null);
   const [editAgent, setEditAgent] = useState(null as AgentConfig | null);
+  const [projectSettings, setProjectSettings] = useState(null as ProjectSettings | null);
 
   useEffect(() => {
     apiGet<string[]>("/models/providers")
       .then(setProviders)
       .catch((err) => setError(err.message));
-    apiGet<{ id: string }[]>("/models")
-      .then((data) => setModels(data.map((m) => m.id)))
+    apiGet<ModelInfo[]>("/models?only_enabled=true")
+      .then((data) => {
+        setModels(data);
+        setProvidersByKey([...new Set(data.map((item: ModelInfo) => item.provider))]);
+      })
+      .catch((err) => setError(err.message));
+    apiGet("/models/recommended?only_enabled=true")
+      .then((data) => setRecommended(data as Record<string, RecommendedEntry>))
       .catch((err) => setError(err.message));
     apiGet<MCPStatus>("/mcp/status")
       .then(setMcpStatus)
@@ -67,6 +103,9 @@ export default function Settings() {
       .catch((err) => setError(err.message));
     apiGet("/agents")
       .then((data) => setAgents(data as AgentConfig[]))
+      .catch((err) => setError(err.message));
+    apiGet("/projects/settings")
+      .then((data) => setProjectSettings(data as ProjectSettings))
       .catch((err) => setError(err.message));
     apiGet("/providers")
       .then((data) => setAvailableProviders(data as { id: string; name: string }[]))
@@ -145,12 +184,60 @@ export default function Settings() {
     if (!editAgentId || !editAgent) {
       return;
     }
-    const updated = (await apiPost(`/agents/${editAgentId}`, editAgent)) as AgentConfig;
+    const updated = (await apiPut(`/agents/${editAgentId}`, editAgent)) as AgentConfig;
     setAgents((prev: AgentConfig[]) =>
       prev.map((agent: AgentConfig) => (agent.id === editAgentId ? updated : agent))
     );
     setEditAgentId(null);
     setEditAgent(null);
+  };
+
+  const modelsForProvider = (providerName: string) =>
+    models
+      .filter((item: ModelInfo) => item.provider === providerName)
+      .map((item: ModelInfo) => item.id);
+
+  const getRecommendedModels = (providerName: string, roleName: string) => {
+    const entry = recommended?.[providerName];
+    const available = entry?.models ?? {};
+    const roleLower = roleName.toLowerCase();
+    if (roleLower.includes("developer") || roleLower.includes("engineer") || roleLower.includes("tech")) {
+      return available.code?.length ? available.code : available.text ?? [];
+    }
+    if (roleLower.includes("designer") || roleLower.includes("artist")) {
+      return available.image?.length ? available.image : available.text ?? [];
+    }
+    return available.text ?? [];
+  };
+
+  const modelOptionsFor = (providerName: string, roleName: string, currentValue: string) => {
+    const base = showAllModels
+      ? modelsForProvider(providerName)
+      : getRecommendedModels(providerName, roleName);
+    const merged = [...base, currentValue].filter(Boolean);
+    return Array.from(new Set(merged));
+  };
+
+  const updateProjectSetting = async (allowAllTools: boolean) => {
+    setError(null);
+    try {
+      const updated = (await apiPut("/projects/settings", {
+        allow_all_tools: allowAllTools
+      })) as ProjectSettings;
+      setProjectSettings(updated);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const updateProjectSettings = async (next: Partial<ProjectSettings>) => {
+    setError(null);
+    try {
+      const updated = (await apiPut("/projects/settings", next)) as ProjectSettings;
+      setProjectSettings(updated);
+    } catch (err) {
+      setError((err as Error).message);
+    }
   };
 
   return (
@@ -163,12 +250,24 @@ export default function Settings() {
           <li key={provider}>{provider}</li>
         ))}
       </ul>
-      <h3>Models</h3>
-      <ul>
-        {models.map((model: string) => (
-          <li key={model}>{model}</li>
-        ))}
-      </ul>
+      <h3>Model Defaults</h3>
+      <div className="card">
+        {Object.keys(recommended).length === 0 && (
+          <div className="muted">No recommended models available yet.</div>
+        )}
+        {(Object.entries(recommended) as [string, RecommendedEntry][])
+          .map(([providerName, info]) => (
+            <div key={providerName} style={{ marginBottom: 10 }}>
+              <strong>{providerName}</strong>
+              <div className="row">
+                <span className="pill">Manager: {info.defaults?.manager ?? "n/a"}</span>
+                <span className="pill">Worker: {info.defaults?.worker ?? "n/a"}</span>
+                <span className="pill">Code: {info.defaults?.code ?? "n/a"}</span>
+                <span className="pill">Image: {info.defaults?.image ?? "n/a"}</span>
+              </div>
+            </div>
+          ))}
+      </div>
       <h3>Notifications</h3>
       <Notifications events={[]} />
       <h3>Unity MCP</h3>
@@ -232,6 +331,40 @@ export default function Settings() {
       </div>
       <h3>Project Settings</h3>
       <div className="card">
+        <div className="row">
+          <label className="pill">Enable all tools for all agents</label>
+          <input
+            type="checkbox"
+            checked={projectSettings?.allow_all_tools ?? false}
+            onChange={(e) => updateProjectSetting(e.target.checked)}
+          />
+        </div>
+        <div className="muted" style={{ marginTop: 6 }}>
+          High-risk tools still require approvals.
+        </div>
+        <div className="row" style={{ marginTop: 8 }}>
+          <label className="pill">Allow high-risk without approval</label>
+          <input
+            type="checkbox"
+            checked={projectSettings?.allow_high_risk ?? false}
+            onChange={(e) => updateProjectSettings({ allow_high_risk: e.target.checked })}
+          />
+        </div>
+        <div className="row" style={{ marginTop: 8 }}>
+          <label className="pill">Default tool scopes</label>
+          <input
+            value={projectSettings?.default_tool_scopes ?? ""}
+            onChange={(e) =>
+              setProjectSettings((prev: ProjectSettings | null) =>
+                prev ? { ...prev, default_tool_scopes: e.target.value } : prev
+              )
+            }
+            onBlur={(e) => updateProjectSettings({ default_tool_scopes: e.target.value })}
+            placeholder="system:run,mcp:call"
+          />
+        </div>
+      </div>
+      <div className="card">
         <ul>
           {agents.map((agent: AgentConfig) => (
             <li key={agent.id}>
@@ -250,6 +383,15 @@ export default function Settings() {
       {editAgent && (
         <div className="card">
           <h3>Edit Agent</h3>
+          <label className="pill" style={{ marginBottom: 8 }}>
+            <input
+              type="checkbox"
+              checked={showAllModels}
+              onChange={(e) => setShowAllModels(e.target.checked)}
+              style={{ marginRight: 6 }}
+            />
+            Show all models (slow)
+          </label>
           <div className="row">
             <input
               value={editAgent.display_name ?? ""}
@@ -267,16 +409,30 @@ export default function Settings() {
                 setEditAgent({ ...editAgent, personality: e.target.value })
               }
             />
-            <input
+            <select
               value={editAgent.provider}
               onChange={(e) =>
                 setEditAgent({ ...editAgent, provider: e.target.value })
               }
-            />
-            <input
+            >
+              {providersByKey.map((providerName: string) => (
+                <option key={providerName} value={providerName}>
+                  {providerName}
+                </option>
+              ))}
+            </select>
+            <select
               value={editAgent.model}
               onChange={(e) => setEditAgent({ ...editAgent, model: e.target.value })}
-            />
+            >
+              {modelOptionsFor(editAgent.provider, editAgent.role, editAgent.model).map(
+                (modelId: string) => (
+                <option key={modelId} value={modelId}>
+                  {modelId}
+                </option>
+              )
+              )}
+            </select>
             <button onClick={saveAgent}>Save</button>
           </div>
         </div>

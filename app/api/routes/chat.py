@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 import uuid
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
@@ -9,6 +10,9 @@ from app.core.events import Event
 from app.core.memory import MemoryStore
 from app.core.artifacts import ArtifactStore
 from app.core.orchestrator import Orchestrator
+from app.core.shell import execute_shell_tool
+from app.integrations.mcp_client import MCPClient
+from app.core.tool_broker import ToolRequest, ToolResult
 from app.core.project_registry import project_attachments_dir
 from app.db.models import AgentConfig, Run, Team, Task
 from app.db.session import get_session
@@ -67,10 +71,15 @@ async def send_message(payload: dict, request: Request) -> dict:
             session.refresh(run)
 
         targets = router_helper.resolve_targets(run.team_id, message)
+        if not message.strip().lower().startswith("@"):
+            best_agent = _pick_best_agent(run.team_id, message)
+            if best_agent and best_agent not in targets:
+                targets.append(best_agent)
 
     event_bus = request.app.state.event_bus
     artifacts = ArtifactStore(request.app.state.data_dir)
     agent_runtime = request.app.state.orchestrator.agent_runtime
+    tool_broker = request.app.state.tool_broker
     stakeholder_message = {
         "message_id": str(uuid.uuid4()),
         "agent": "Stakeholder",
@@ -79,15 +88,15 @@ async def send_message(payload: dict, request: Request) -> dict:
         "timestamp": datetime.utcnow().isoformat(),
     }
     artifacts.write_chat(run.id, "Stakeholder", stakeholder_message)
-    await event_bus.publish(
-        Event(
-            type="chat.message",
-            payload={
-                **stakeholder_message,
-                "targets": [t.display_name or t.role for t in targets],
-            },
-        )
+    stakeholder_event = Event(
+        type="chat.message",
+        payload={
+            **stakeholder_message,
+            "targets": [t.display_name or t.role for t in targets],
+        },
     )
+    artifacts.write_event(run.id, stakeholder_event.__dict__)
+    await event_bus.publish(stakeholder_event)
 
     await event_bus.publish(
         Event(
@@ -110,23 +119,25 @@ async def send_message(payload: dict, request: Request) -> dict:
         session.add(task)
         session.commit()
         session.refresh(task)
-        await event_bus.publish(
-            Event(
-                type="task.created",
-                payload={
-                    "task_id": task.id,
-                    "title": task.title,
-                    "assigned_role": task.assigned_role,
-                },
-            )
+        task_event = Event(
+            type="task.created",
+            payload={
+                "task_id": task.id,
+                "title": task.title,
+                "assigned_role": task.assigned_role,
+            },
         )
+        artifacts.write_event(run.id, task_event.__dict__)
+        await event_bus.publish(task_event)
 
     has_mention = "@" in message
     response_prompt = (
         "Incoming stakeholder message:\n"
         f"{message}\n\n"
         "If a response is required, reply with a concise response. "
-        "If no response is needed, return exactly: NO_RESPONSE."
+        "If no response is needed, return exactly: NO_RESPONSE.\n"
+        "If a tool is required, respond with ONLY a JSON object:\n"
+        '{\"tool\":\"system.run\",\"arguments\":{\"command\":\"whoami\"}}'
     )
     for agent in targets:
         if not agent.id:
@@ -145,6 +156,12 @@ async def send_message(payload: dict, request: Request) -> dict:
         prompt = message if has_mention else response_prompt
         response = await agent_runtime.run_agent(run.id, agent, prompt)
         response_text = (response.get("content") or "").strip()
+        tool_call = _extract_tool_call(response_text)
+        if tool_call:
+            tool_result = await _execute_tool_call(
+                tool_call, request, tool_broker, agent, run.id
+            )
+            response_text = tool_result
         if not has_mention and response_text.upper() == "NO_RESPONSE":
             continue
         agent_message = {
@@ -155,18 +172,15 @@ async def send_message(payload: dict, request: Request) -> dict:
             "timestamp": datetime.utcnow().isoformat(),
         }
         artifacts.write_chat(run.id, agent.role, agent_message)
-        await event_bus.publish(
-            Event(
-                type="agent.response",
-                payload={"agent": agent.role, "content": response_text},
-            )
+        agent_event = Event(
+            type="agent.response",
+            payload={"agent": agent.role, "content": response_text},
         )
-        await event_bus.publish(
-            Event(
-                type="chat.message",
-                payload=agent_message,
-            )
-        )
+        chat_event = Event(type="chat.message", payload=agent_message)
+        artifacts.write_event(run.id, agent_event.__dict__)
+        artifacts.write_event(run.id, chat_event.__dict__)
+        await event_bus.publish(agent_event)
+        await event_bus.publish(chat_event)
         memory.append(run.id, agent.id, agent.role, f"Agent: {response_text}")
 
     return {
@@ -174,6 +188,109 @@ async def send_message(payload: dict, request: Request) -> dict:
         "run_id": run.id,
         "targets": [t.display_name or t.role for t in targets],
     }
+
+
+def _pick_best_agent(team_id: int, message: str) -> AgentConfig | None:
+    keywords = {
+        "qa": ["test", "bug", "regression", "qa", "verify"],
+        "devops": ["deploy", "ci", "pipeline", "infra", "release"],
+        "docs": ["docs", "documentation", "readme", "guide"],
+        "dev": ["code", "implement", "fix", "refactor", "build"],
+        "pm": ["scope", "plan", "requirements", "roadmap"],
+    }
+    text = message.lower()
+    with get_session() as session:
+        agents = list(session.exec(select(AgentConfig).where(AgentConfig.team_id == team_id)))
+    scored: list[tuple[int, AgentConfig]] = []
+    for agent in agents:
+        role = agent.role.lower()
+        score = 0
+        for key, words in keywords.items():
+            if key in role:
+                score += sum(1 for w in words if w in text) * 2
+            else:
+                score += sum(1 for w in words if w in text)
+        scored.append((score, agent))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    if scored and scored[0][0] > 0:
+        return scored[0][1]
+    return None
+
+
+def _extract_tool_call(text: str) -> dict | None:
+    if not text:
+        return None
+    if text.startswith("{") and text.endswith("}"):
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict) and data.get("tool") and data.get("arguments"):
+                return data
+        except Exception:
+            return None
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    snippet = text[start : end + 1]
+    try:
+        data = json.loads(snippet)
+        if isinstance(data, dict) and data.get("tool") and data.get("arguments"):
+            return data
+    except Exception:
+        return None
+    return None
+
+
+async def _execute_tool_call(
+    tool_call: dict,
+    request: Request,
+    broker,
+    agent: AgentConfig,
+    run_id: int,
+) -> str:
+    tool_name = tool_call.get("tool")
+    arguments = tool_call.get("arguments") or {}
+    if tool_name not in {"system.run", "mcp.call"}:
+        return f"Tool execution blocked: unknown tool {tool_name}."
+
+    if tool_name == "system.run":
+        if "system.run" not in broker.executors:
+            broker.register("system.run", execute_shell_tool)
+        if "cwd" not in arguments:
+            arguments["cwd"] = str(request.app.state.active_project_root)
+        if "allowed_roots" not in arguments:
+            arguments["allowed_roots"] = [
+                str(request.app.state.active_project_root),
+                str(request.app.state.settings.repo_root),
+            ]
+        required_scopes = ["system:run"]
+    else:
+        if "mcp.call" not in broker.executors:
+            async def _executor(tool_request: ToolRequest):
+                client = MCPClient(tool_request.arguments["url"])
+                await client.initialize()
+                result = await client.call_tool(
+                    tool_request.arguments["name"],
+                    tool_request.arguments.get("arguments", {}),
+                )
+                return ToolResult(success=True, output=result)
+            broker.register("mcp.call", _executor)
+        required_scopes = ["mcp:call"]
+
+    actor_scopes = [
+        item.strip() for item in (agent.permissions or "").split(",") if item.strip()
+    ]
+    tool_request = ToolRequest(
+        tool_name=tool_name,
+        arguments=arguments,
+        required_scopes=required_scopes,
+        actor=agent.display_name or agent.role,
+        run_id=run_id,
+    )
+    result = await broker.execute_async(tool_request, actor_scopes)
+    if not result.success:
+        return f"Tool execution blocked: {result.error}"
+    return json.dumps(result.output or {}, ensure_ascii=True)
 
 
 @router.post("/upload")

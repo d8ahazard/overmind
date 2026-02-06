@@ -7,7 +7,7 @@ import TeamChat from "../components/TeamChat";
 import TaskTimeline from "../components/TaskTimeline";
 import Workflow from "../components/Workflow";
 import BoardSummary from "../components/BoardSummary";
-import { apiPost } from "../lib/api";
+import { apiGet, apiPost } from "../lib/api";
 
 type EventMessage = {
   type: string;
@@ -20,6 +20,9 @@ export default function RunConsole() {
   const [runId, setRunId] = useState(1);
   const [connected, setConnected] = useState(false);
   const [seedInfo, setSeedInfo] = useState(null as string | null);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [selectedIndex, setSelectedIndex] = useState(null as number | null);
+  const [selectedEvent, setSelectedEvent] = useState(null as EventMessage | null);
 
   useEffect(() => {
     const socket = new WebSocket(`ws://${window.location.host}/ws/events`);
@@ -35,6 +38,27 @@ export default function RunConsole() {
     };
     return () => socket.close();
   }, []);
+
+  useEffect(() => {
+    const loadHistory = async () => {
+      try {
+        const history = (await apiGet(
+          runId ? `/events/history?run_id=${runId}` : "/events/history"
+        )) as { run_id: number | null; events: EventMessage[] };
+        if (history.run_id && !runId) {
+          setRunId(history.run_id);
+        }
+        if (history.events.length) {
+          setEvents((prev: EventMessage[]) => [...history.events, ...prev].slice(-400));
+        }
+      } catch {
+        // ignore history load errors
+      } finally {
+        setHistoryLoaded(true);
+      }
+    };
+    void loadHistory();
+  }, [runId]);
 
   const agentMessages = useMemo(
     () =>
@@ -167,7 +191,24 @@ export default function RunConsole() {
         />
       </div>
       <div className="grid-2">
-        <TaskTimeline events={events} />
+        <TaskTimeline
+          events={events}
+          selectedIndex={selectedIndex}
+          onSelect={(index, event) => {
+            setSelectedIndex(index);
+            setSelectedEvent(event);
+          }}
+        />
+        <div className="card">
+          <h3>Event Details</h3>
+          {selectedEvent ? (
+            <pre style={{ whiteSpace: "pre-wrap" }}>
+              {JSON.stringify(selectedEvent, null, 2)}
+            </pre>
+          ) : (
+            <div className="muted">Click a timeline event to view details.</div>
+          )}
+        </div>
         <div className="card">
           <h3>Stakeholder Signals</h3>
           <div className="muted">

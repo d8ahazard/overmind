@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import artifacts, models, projects, runs, tasks, teams
-from app.api.routes import agents, approvals, avatars, budgets, chat, keys, mcp, memories, personalities, providers, repo, seed, system
+from app.api.routes import agents, approvals, avatars, budgets, chat, events, keys, mcp, memories, personalities, providers, repo, seed, system
 from app.api.ws import router as ws_router
 from app.config import load_settings
 from app.core.approvals import ApprovalStore
@@ -20,6 +20,7 @@ from app.core.verification import NoopVerifier
 from app.core.project_registry import ProjectRegistry, project_data_dir, project_db_url
 from app.db.session import init_db
 from app.core.orchestrator import Orchestrator
+from app.core.manager_loop import ManagerLoop
 from app.core.artifacts import ArtifactStore
 from app.agents.runtime import AgentRuntime
 from app.providers.model_registry import ModelRegistry
@@ -49,7 +50,11 @@ def create_app() -> FastAPI:
     app.state.audit_logger = AuditLogger()
     app.state.approval_store = ApprovalStore()
     app.state.tool_broker = ToolBroker(
-        app.state.policy_engine, app.state.audit_logger, app.state.approval_store
+        app.state.policy_engine,
+        app.state.audit_logger,
+        app.state.approval_store,
+        app.state.event_bus,
+        lambda run_id, event: ArtifactStore(app.state.data_dir).write_event(run_id, event),
     )
     app.state.job_engine = JobEngine(app.state.event_bus)
     app.state.verifier = NoopVerifier()
@@ -70,6 +75,13 @@ def create_app() -> FastAPI:
         app.state.job_engine,
         app.state.verifier,
     )
+    app.state.manager_loop = ManagerLoop(
+        app.state.event_bus,
+        lambda: app.state.active_project_id,
+        app.state.orchestrator.agent_runtime,
+        app.state.tool_broker,
+        ArtifactStore(app.state.data_dir),
+    )
 
     app.add_middleware(
         CORSMiddleware,
@@ -84,6 +96,7 @@ def create_app() -> FastAPI:
     app.include_router(runs.router, prefix="/runs", tags=["runs"])
     app.include_router(tasks.router, prefix="/tasks", tags=["tasks"])
     app.include_router(artifacts.router, prefix="/artifacts", tags=["artifacts"])
+    app.include_router(events.router, prefix="/events", tags=["events"])
     app.include_router(models.router, prefix="/models", tags=["models"])
     app.include_router(agents.router, prefix="/agents", tags=["agents"])
     app.include_router(chat.router, prefix="/chat", tags=["chat"])
@@ -112,6 +125,10 @@ def create_app() -> FastAPI:
         public_dir = ui_root / "public"
         if public_dir.exists():
             app.mount("/public", StaticFiles(directory=public_dir), name="public")
+
+    @app.on_event("startup")
+    async def _start_manager_loop() -> None:
+        app.state.manager_loop.start()
 
     return app
 

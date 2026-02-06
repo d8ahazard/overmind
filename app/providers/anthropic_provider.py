@@ -15,8 +15,9 @@ class AnthropicProvider(ProviderBase):
     def validate_key(self) -> bool:
         return bool(self.api_key)
 
-    async def list_models(self) -> List[ModelInfo]:
-        if not self.api_key:
+    async def list_models(self, api_key: str | None = None) -> List[ModelInfo]:
+        key = api_key or self.api_key
+        if not key:
             return []
         # Anthropic does not provide a stable public model list API.
         return []
