@@ -223,13 +223,14 @@ export default function TeamBuilder() {
     }
   };
 
-  const updateAgent = async (agent: AgentConfig) => {
+  const updateAgentById = async (agentId: number) => {
     setError(null);
-    if (!agent.id) {
+    const agent = agents.find((item: AgentConfig) => item.id === agentId);
+    if (!agent) {
       return;
     }
     try {
-      const updated = (await apiPut(`/agents/${agent.id}`, agent)) as AgentConfig;
+      const updated = (await apiPut(`/agents/${agentId}`, agent)) as AgentConfig;
       setAgents((prev: AgentConfig[]) =>
         prev.map((item: AgentConfig) => (item.id === updated.id ? updated : item))
       );
@@ -544,7 +545,7 @@ export default function TeamBuilder() {
                         )
                       )
                     }
-                    onBlur={() => updateAgent(agent)}
+                    onBlur={() => agent.id && updateAgentById(agent.id)}
                     placeholder="Name"
                   />
                   <input
@@ -556,7 +557,7 @@ export default function TeamBuilder() {
                         )
                       )
                     }
-                    onBlur={() => updateAgent(agent)}
+                    onBlur={() => agent.id && updateAgentById(agent.id)}
                     placeholder="Role"
                   />
                   {hasProviders ? (
@@ -571,7 +572,7 @@ export default function TeamBuilder() {
                           )
                         )
                       }
-                      onBlur={() => updateAgent(agent)}
+                      onBlur={() => agent.id && updateAgentById(agent.id)}
                     >
                       {providers.map((providerName: string) => (
                         <option key={providerName} value={providerName}>
@@ -591,7 +592,7 @@ export default function TeamBuilder() {
                           )
                         )
                       }
-                      onBlur={() => updateAgent(agent)}
+                      onBlur={() => agent.id && updateAgentById(agent.id)}
                       placeholder="Provider"
                     />
                   )}
@@ -605,7 +606,7 @@ export default function TeamBuilder() {
                           )
                         )
                       }
-                      onBlur={() => updateAgent(agent)}
+                      onBlur={() => agent.id && updateAgentById(agent.id)}
                     >
                       {modelOptionsFor(agent.provider, agent.role, agent.model).map(
                         (modelId: string) => (
@@ -625,11 +626,13 @@ export default function TeamBuilder() {
                           )
                         )
                       }
-                      onBlur={() => updateAgent(agent)}
+                      onBlur={() => agent.id && updateAgentById(agent.id)}
                       placeholder="Model"
                     />
                   )}
-                  <button onClick={() => updateAgent(agent)}>Save</button>
+                  <button onClick={() => agent.id && updateAgentById(agent.id)}>
+                    Save
+                  </button>
                   {agent.id && (
                     <button
                       onClick={() => deleteAgent(agent.id as number)}
@@ -651,7 +654,7 @@ export default function TeamBuilder() {
                       )
                     )
                   }
-                  onBlur={() => updateAgent(agent)}
+                  onBlur={() => agent.id && updateAgentById(agent.id)}
                   placeholder="Personality"
                   style={{ marginTop: 8, width: "100%" }}
                 />
@@ -667,7 +670,7 @@ export default function TeamBuilder() {
                         )
                       )
                     }
-                    onBlur={() => updateAgent(agent)}
+                    onBlur={() => agent.id && updateAgentById(agent.id)}
                     placeholder="Permissions"
                   />
                   <input
@@ -681,7 +684,7 @@ export default function TeamBuilder() {
                         )
                       )
                     }
-                    onBlur={() => updateAgent(agent)}
+                    onBlur={() => agent.id && updateAgentById(agent.id)}
                     placeholder="Capabilities"
                   />
                 </div>
@@ -696,7 +699,7 @@ export default function TeamBuilder() {
                       )
                     )
                   }
-                  onBlur={() => updateAgent(agent)}
+                  onBlur={() => agent.id && updateAgentById(agent.id)}
                   placeholder="Avatar URL"
                   style={{ marginTop: 8, width: "100%" }}
                 />

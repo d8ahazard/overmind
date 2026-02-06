@@ -51,6 +51,9 @@ class ModelRegistry:
                 return []
             if provider not in self._cache:
                 await self.refresh(provider)
+            elif not self._cache.get(provider) and self._secrets_broker:
+                if self._secrets_broker.get_provider_key(provider):
+                    await self.refresh(provider)
             return self._cache.get(provider, [])
 
         all_models: List[ModelInfo] = []
@@ -59,6 +62,9 @@ class ModelRegistry:
                 continue
             if name not in self._cache:
                 await self.refresh(name)
+            elif not self._cache.get(name) and self._secrets_broker:
+                if self._secrets_broker.get_provider_key(name):
+                    await self.refresh(name)
             all_models.extend(self._cache.get(name, []))
         return all_models
 

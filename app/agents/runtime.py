@@ -9,6 +9,7 @@ from app.core.memory import MemoryStore
 from app.core.secrets import SecretsBroker
 from app.integrations.mcp_client import MCPRegistry
 from app.providers.model_registry import ModelRegistry
+from app.providers.model_filters import filter_chat_models, is_chat_model, pick_best_chat_model
 from app.providers.base import ProviderError
 from app.db.models import AgentConfig, ProjectBudget, Run
 from app.db.session import get_session
@@ -50,13 +51,27 @@ class AgentRuntime:
             f"Name: {name}\nRole: {agent.role}\nPersona: {persona}\n"
             f"Goal: {goal}{tools_note}{memory_note}\n"
         )
+        model_to_use = agent.model
+        if not is_chat_model(agent.provider, agent.model):
+            models = await self.registry.list_models(provider=agent.provider, enabled=[agent.provider])
+            chat_models = filter_chat_models(agent.provider, [item.id for item in models])
+            fallback = pick_best_chat_model(chat_models)
+            if fallback:
+                model_to_use = fallback
+                if agent.id:
+                    with get_session() as session:
+                        stored = session.get(AgentConfig, agent.id)
+                        if stored:
+                            stored.model = fallback
+                            session.add(stored)
+                            session.commit()
         payload = {"prompt": prompt, "role": agent.role}
         if self.secrets_broker:
             token = self.secrets_broker.issue_provider_token(agent.provider)
             if token:
                 payload["provider_token"] = token.token
         try:
-            response = await self.registry.invoke(agent.provider, agent.model, payload)
+            response = await self.registry.invoke(agent.provider, model_to_use, payload)
         except ProviderError as exc:
             return {
                 "role": agent.role,

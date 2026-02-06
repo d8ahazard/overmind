@@ -32,6 +32,10 @@ type AgentConfig = {
 type ModelInfo = {
   id: string;
   provider: string;
+  supports_tools?: boolean;
+  supports_vision?: boolean;
+  context_length?: number;
+  recommended_roles?: string[] | null;
 };
 
 type RecommendedEntry = {
@@ -79,9 +83,42 @@ export default function Settings() {
   const [editAgent, setEditAgent] = useState(null as AgentConfig | null);
   const [projectSettings, setProjectSettings] = useState(null as ProjectSettings | null);
 
+  const toProviderLabel = (value: unknown) => {
+    if (typeof value === "string") {
+      return value;
+    }
+    if (value && typeof value === "object") {
+      const maybe = value as { provider?: string; id?: string };
+      return maybe.provider ?? maybe.id ?? "";
+    }
+    return "";
+  };
+
+  const toModelId = (value: unknown) => {
+    if (typeof value === "string") {
+      return value;
+    }
+    if (value && typeof value === "object") {
+      const maybe = value as { id?: string; model?: string; name?: string };
+      return maybe.id ?? maybe.model ?? maybe.name ?? "";
+    }
+    return "";
+  };
+
+  const toModelLabel = (value: unknown) => {
+    const id = toModelId(value);
+    return id || "unknown";
+  };
+
   useEffect(() => {
-    apiGet<string[]>("/models/providers")
-      .then(setProviders)
+    apiGet<unknown[]>("/models/providers")
+      .then((data) =>
+        setProviders(
+          (data as unknown[]).map((item) =>
+            toProviderLabel(item)
+          ).filter(Boolean)
+        )
+      )
       .catch((err) => setError(err.message));
     apiGet<ModelInfo[]>("/models?only_enabled=true")
       .then((data) => {
@@ -202,19 +239,21 @@ export default function Settings() {
     const available = entry?.models ?? {};
     const roleLower = roleName.toLowerCase();
     if (roleLower.includes("developer") || roleLower.includes("engineer") || roleLower.includes("tech")) {
-      return available.code?.length ? available.code : available.text ?? [];
+      const picked = available.code?.length ? available.code : available.text ?? [];
+      return picked.map(toModelId).filter(Boolean);
     }
     if (roleLower.includes("designer") || roleLower.includes("artist")) {
-      return available.image?.length ? available.image : available.text ?? [];
+      const picked = available.image?.length ? available.image : available.text ?? [];
+      return picked.map(toModelId).filter(Boolean);
     }
-    return available.text ?? [];
+    return (available.text ?? []).map(toModelId).filter(Boolean);
   };
 
   const modelOptionsFor = (providerName: string, roleName: string, currentValue: string) => {
     const base = showAllModels
       ? modelsForProvider(providerName)
       : getRecommendedModels(providerName, roleName);
-    const merged = [...base, currentValue].filter(Boolean);
+    const merged = [...base, toModelId(currentValue)].filter(Boolean);
     return Array.from(new Set(merged));
   };
 
@@ -246,9 +285,10 @@ export default function Settings() {
       {error && <p style={{ color: "tomato" }}>{error}</p>}
       <h3>Providers</h3>
       <ul>
-        {providers.map((provider: string) => (
-          <li key={provider}>{provider}</li>
-        ))}
+        {providers.map((provider: string, index: number) => {
+          const label = toProviderLabel(provider);
+          return <li key={`${label}-${index}`}>{label}</li>;
+        })}
       </ul>
       <h3>Model Defaults</h3>
       <div className="card">
@@ -368,11 +408,17 @@ export default function Settings() {
         <ul>
           {agents.map((agent: AgentConfig) => (
             <li key={agent.id}>
-              {agent.display_name ?? agent.role} ({agent.role}) - {agent.provider}/{agent.model}
+              {agent.display_name ?? agent.role} ({agent.role}) - {agent.provider}/
+              {toModelLabel(agent.model)}
               <button
                 className="secondary"
                 style={{ marginLeft: 8 }}
-                onClick={() => startEditAgent(agent)}
+                onClick={() =>
+                  startEditAgent({
+                    ...agent,
+                    model: toModelId(agent.model)
+                  })
+                }
               >
                 Edit
               </button>
@@ -422,7 +468,7 @@ export default function Settings() {
               ))}
             </select>
             <select
-              value={editAgent.model}
+              value={toModelId(editAgent.model)}
               onChange={(e) => setEditAgent({ ...editAgent, model: e.target.value })}
             >
               {modelOptionsFor(editAgent.provider, editAgent.role, editAgent.model).map(

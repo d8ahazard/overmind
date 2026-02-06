@@ -7,6 +7,11 @@ from sqlmodel import select
 
 from app.core.presets import PRESETS, build_agents
 from app.providers.model_registry import ModelRegistry
+from app.providers.model_filters import (
+    filter_chat_models,
+    is_chat_model,
+    pick_worker_chat_model,
+)
 from app.db.models import ProjectSetting, Team
 from app.db.session import get_session
 
@@ -81,6 +86,12 @@ async def apply_preset(team_id: int, payload: dict, request: Request) -> dict:
         team = session.get(Team, team_id)
         if not team:
             raise HTTPException(status_code=404, detail="Team not found")
+        if not is_chat_model(provider, model):
+            models = await ModelRegistry(request.app.state.secrets_broker).list_models(
+                provider=provider, enabled=[provider]
+            )
+            chat_models = filter_chat_models(provider, [item.id for item in models])
+            model = pick_worker_chat_model(chat_models) or model
         agents = build_agents(team_id, size, provider, model)
         setting = session.exec(
             select(ProjectSetting).where(ProjectSetting.project_id == team.project_id)
