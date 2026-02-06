@@ -42,6 +42,8 @@ def run_system_command(payload: dict, request: Request) -> dict:
         approval_id=payload.get("approval_id"),
     )
     actor_scopes = payload.get("actor_scopes", [])
+    if isinstance(actor_scopes, str):
+        actor_scopes = [item.strip() for item in actor_scopes.split(",") if item.strip()]
     result = broker.execute(tool_request, actor_scopes)
     return {
         "success": result.success,

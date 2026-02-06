@@ -39,9 +39,11 @@ class Orchestrator:
         await self.event_bus.publish(event)
         self.artifact_store.write_event(run_id, event.__dict__)
 
-    def _get_agents(self, team_id: int) -> List[AgentConfig]:
-        with get_session() as session:
-            return list(session.exec(select(AgentConfig).where(AgentConfig.team_id == team_id)))
+    def _get_agents(self, team_id: int, session=None) -> List[AgentConfig]:
+        if session is None:
+            with get_session() as session:
+                return list(session.exec(select(AgentConfig).where(AgentConfig.team_id == team_id)))
+        return list(session.exec(select(AgentConfig).where(AgentConfig.team_id == team_id)))
 
     async def start_run(self, run_id: int) -> None:
         with get_session() as session:
@@ -59,12 +61,12 @@ class Orchestrator:
             session.add(run)
             session.commit()
 
-        job = self.job_engine.create_job(run_id)
+        job_id = self.job_engine.create_job(run_id)
         watcher = FileWatcher(repo_root, self.event_bus, self.artifact_store, run_id)
         await self._emit(
             run_id,
             "run.started",
-            {"run_id": run_id, "repo_root": str(repo_root), "job_id": job.id},
+            {"run_id": run_id, "repo_root": str(repo_root), "job_id": job_id},
         )
         watcher.start()
         try:
@@ -73,11 +75,11 @@ class Orchestrator:
                 "scoping": lambda: self._phase_scoping(run_id),
                 "planning": lambda: self._phase_planning(run_id),
                 "executing": lambda: self._phase_executing(run_id),
-                "verifying": lambda: self._phase_verifying(run_id, job.id or 0),
+                "verifying": lambda: self._phase_verifying(run_id, job_id),
             }
-            await self.job_engine.run(job, steps, handlers)
+            await self.job_engine.run(job_id, steps, handlers)
             with get_session() as session:
-                refreshed = session.get(Job, job.id)
+                refreshed = session.get(Job, job_id)
                 status = "failed" if refreshed and refreshed.status == "failed" else "completed"
             await self.complete_run(run_id, status=status)
         finally:
@@ -96,7 +98,7 @@ class Orchestrator:
             run = session.get(Run, run_id)
             if not run:
                 return JobStepResult(False, "run_not_found")
-            agents = self._get_agents(run.team_id)
+            agents = self._get_agents(run.team_id, session)
             for agent in agents:
                 response = await self.agent_runtime.run_agent(run_id, agent, run.goal)
                 self.artifact_store.write_chat(run_id, agent.role, response)
@@ -115,7 +117,12 @@ class Orchestrator:
                     },
                 )
                 if agent.id:
-                    entry = self.memory_store.append(run_id, agent, response.get("content", ""))
+                    entry = self.memory_store.append(
+                        run_id,
+                        agent.id,
+                        agent.role,
+                        response.get("content", ""),
+                    )
                     await self._emit(
                         run_id,
                         "memory.updated",
@@ -133,7 +140,7 @@ class Orchestrator:
             run = session.get(Run, run_id)
             if not run:
                 return
-            agents = self._get_agents(run.team_id)
+            agents = self._get_agents(run.team_id, session)
             for agent in agents:
                 prompt = (
                     "Introduce yourself in one short paragraph. "

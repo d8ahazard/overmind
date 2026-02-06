@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Dict
@@ -39,7 +40,11 @@ class ArtifactStore:
 
     def write_snapshot(self, run_id: int, file_path: str, contents: str) -> Path:
         self._ensure_dirs(run_id)
-        safe_name = file_path.replace("/", "_").replace("\\", "_")
+        safe_name = file_path.replace(":", "").replace("/", "_").replace("\\", "_")
+        if len(safe_name) > 120:
+            digest = hashlib.sha256(file_path.encode("utf-8")).hexdigest()[:16]
+            base = Path(file_path).name.replace(":", "") or "snapshot"
+            safe_name = f"{base}_{digest}"
         path = self._run_dir(run_id) / "snapshots" / f"{safe_name}.txt"
         with path.open("w", encoding="utf-8") as handle:
             handle.write(contents)

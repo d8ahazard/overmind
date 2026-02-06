@@ -2,7 +2,9 @@ import asyncio
 
 from app.core.artifacts import ArtifactStore
 from app.core.events import EventBus
+from app.core.job_engine import JobEngine
 from app.core.orchestrator import Orchestrator
+from app.core.verification import NoopVerifier
 from app.db.models import AgentConfig, Project, Run, Team
 from app.db.session import init_db, get_session
 
@@ -39,7 +41,14 @@ def test_orchestrator_completes_run(tmp_path):
 
     event_bus = EventBus()
     artifacts = ArtifactStore(tmp_path / "artifacts")
-    orchestrator = Orchestrator(event_bus, artifacts, FakeRuntime(), tmp_path)
+    orchestrator = Orchestrator(
+        event_bus,
+        artifacts,
+        FakeRuntime(),
+        tmp_path,
+        JobEngine(event_bus),
+        NoopVerifier(),
+    )
     asyncio.run(orchestrator.start_run(run.id))
 
     with get_session() as session:

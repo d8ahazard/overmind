@@ -31,7 +31,10 @@ class SecretsBroker:
             ).first()
         if not stored:
             return None
-        secret_value = decrypt_value(stored.encrypted_key, self._master_key)
+        try:
+            secret_value = decrypt_value(stored.encrypted_key, self._master_key)
+        except Exception:
+            return None
         token = secrets.token_urlsafe(32)
         expires_at = datetime.utcnow() + timedelta(seconds=ttl_seconds)
         self._tokens[token] = (secret_value, expires_at)

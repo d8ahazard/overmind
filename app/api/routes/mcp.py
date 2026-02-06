@@ -73,6 +73,8 @@ async def mcp_call(request: Request, payload: dict) -> dict:
         approval_id=payload.get("approval_id"),
     )
     actor_scopes = payload.get("actor_scopes", [])
+    if isinstance(actor_scopes, str):
+        actor_scopes = [item.strip() for item in actor_scopes.split(",") if item.strip()]
     result = await broker.execute_async(tool_request, actor_scopes)
     if result.output is not None:
         return result.output

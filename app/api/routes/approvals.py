@@ -11,6 +11,8 @@ router = APIRouter()
 
 @router.post("/", response_model=Approval)
 def create_approval(approval: Approval) -> Approval:
+    if approval.status not in {"approved", "denied", "pending"}:
+        raise HTTPException(status_code=400, detail="Invalid status")
     with get_session() as session:
         session.add(approval)
         session.commit()
