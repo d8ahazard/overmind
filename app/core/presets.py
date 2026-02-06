@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import List
+import random
 
 from sqlmodel import select
 
@@ -89,6 +90,29 @@ def _select_template(role: str) -> str:
     return DEFAULT_PERSONALITIES.get(role, "Professional and concise.")
 
 
+def _random_personality(role: str) -> str:
+    tones = [
+        "pragmatic", "curious", "direct", "empathetic", "systematic", "decisive",
+        "patient", "analytical", "collaborative", "detail-oriented",
+    ]
+    focus = [
+        "clear communication", "risk reduction", "quality", "speed with safety",
+        "customer outcomes", "reliable delivery", "clean architecture",
+        "test coverage", "operational readiness",
+    ]
+    cadence = [
+        "short, crisp updates", "structured checklists", "succinct tradeoffs",
+        "well-documented decisions",
+    ]
+    base = DEFAULT_PERSONALITIES.get(role, "Professional and concise.")
+    return (
+        f"{base} "
+        f"Tone: {random.choice(tones)}. "
+        f"Focus: {random.choice(focus)}. "
+        f"Prefers {random.choice(cadence)}."
+    )
+
+
 def build_agents(team_id: int, size: str, provider: str, model: str) -> List[AgentConfig]:
     preset = PRESETS.get(size, PRESETS["medium"])
     role_counts = {}
@@ -103,7 +127,7 @@ def build_agents(team_id: int, size: str, provider: str, model: str) -> List[Age
                 team_id=team_id,
                 display_name=display_name,
                 role=role,
-                personality=_select_template(role),
+                personality=_random_personality(role),
                 provider=provider,
                 model=model,
             )

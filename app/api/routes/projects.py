@@ -41,15 +41,34 @@ def create_project(payload: dict, request: Request) -> dict:
 @router.get("/")
 def list_projects(request: Request) -> List[dict]:
     registry = request.app.state.project_registry
-    return [
+    projects = [
         {"id": item.id, "name": item.name, "repo_local_path": item.repo_local_path}
         for item in registry.list_projects()
     ]
+    if request.app.state.settings.allow_self_project:
+        projects.insert(
+            0,
+            {
+                "id": 0,
+                "name": "Self",
+                "repo_local_path": str(request.app.state.settings.repo_root),
+                "kind": "self",
+            },
+        )
+    return projects
 
 
 @router.get("/active")
 def get_active_project(request: Request) -> dict:
     registry = request.app.state.project_registry
+    active_id = registry.get_active_id()
+    if active_id == 0 and request.app.state.settings.allow_self_project:
+        return {
+            "id": 0,
+            "name": "Self",
+            "repo_local_path": str(request.app.state.settings.repo_root),
+            "kind": "self",
+        }
     active = registry.get_active()
     if not active:
         raise HTTPException(status_code=404, detail="No active project")
@@ -59,6 +78,26 @@ def get_active_project(request: Request) -> dict:
 @router.post("/{project_id}/activate")
 def activate_project(project_id: int, request: Request) -> dict:
     registry = request.app.state.project_registry
+    if project_id == 0 and request.app.state.settings.allow_self_project:
+        registry.set_active(0)
+        root = project_data_dir(request.app.state.settings.repo_root)
+        root.mkdir(parents=True, exist_ok=True)
+        init_db(project_db_url(request.app.state.settings.repo_root))
+        request.app.state.active_project_id = 0
+        request.app.state.active_project_root = request.app.state.settings.repo_root
+        request.app.state.data_dir = root
+        with get_session() as session:
+            existing = session.exec(select(Project).where(Project.id == 0)).first()
+            if not existing:
+                session.add(
+                    Project(
+                        id=0,
+                        name="Self",
+                        repo_local_path=str(request.app.state.settings.repo_root),
+                    )
+                )
+                session.commit()
+        return {"status": "ok", "active_project_id": 0}
     entry = registry.get_project(project_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Project not found")
