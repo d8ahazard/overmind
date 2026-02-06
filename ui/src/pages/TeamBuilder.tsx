@@ -329,6 +329,7 @@ export default function TeamBuilder() {
                         )
                       )
                     }
+                    onBlur={() => updateAgent(agent)}
                     placeholder="Name"
                   />
                   <input
@@ -340,6 +341,7 @@ export default function TeamBuilder() {
                         )
                       )
                     }
+                    onBlur={() => updateAgent(agent)}
                     placeholder="Role"
                   />
                   <input
@@ -353,6 +355,7 @@ export default function TeamBuilder() {
                         )
                       )
                     }
+                    onBlur={() => updateAgent(agent)}
                     placeholder="Provider"
                   />
                   <input
@@ -364,6 +367,7 @@ export default function TeamBuilder() {
                         )
                       )
                     }
+                    onBlur={() => updateAgent(agent)}
                     placeholder="Model"
                   />
                   <button onClick={() => updateAgent(agent)}>Save</button>
@@ -388,6 +392,7 @@ export default function TeamBuilder() {
                       )
                     )
                   }
+                  onBlur={() => updateAgent(agent)}
                   placeholder="Personality"
                   style={{ marginTop: 8, width: "100%" }}
                 />
@@ -403,6 +408,7 @@ export default function TeamBuilder() {
                         )
                       )
                     }
+                    onBlur={() => updateAgent(agent)}
                     placeholder="Permissions"
                   />
                   <input
@@ -416,6 +422,7 @@ export default function TeamBuilder() {
                         )
                       )
                     }
+                    onBlur={() => updateAgent(agent)}
                     placeholder="Capabilities"
                   />
                 </div>
@@ -430,6 +437,7 @@ export default function TeamBuilder() {
                       )
                     )
                   }
+                  onBlur={() => updateAgent(agent)}
                   placeholder="Avatar URL"
                   style={{ marginTop: 8, width: "100%" }}
                 />

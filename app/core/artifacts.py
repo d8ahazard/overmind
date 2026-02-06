@@ -30,6 +30,24 @@ class ArtifactStore:
             handle.write(json.dumps(message, ensure_ascii=True) + "\n")
         return path
 
+    def read_chats(self, run_id: int) -> list[dict]:
+        run_dir = self._run_dir(run_id) / "chats"
+        if not run_dir.exists():
+            return []
+        messages: list[dict] = []
+        for item in run_dir.glob("*.jsonl"):
+            try:
+                contents = item.read_text(encoding="utf-8").splitlines()
+            except Exception:
+                continue
+            for line in contents:
+                try:
+                    messages.append(json.loads(line))
+                except Exception:
+                    continue
+        messages.sort(key=lambda msg: msg.get("timestamp", ""))
+        return messages
+
     def write_artifact(self, run_id: int, artifact: Dict[str, Any]) -> Path:
         self._ensure_dirs(run_id)
         name = artifact.get("type", "artifact").lower()

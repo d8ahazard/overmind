@@ -16,6 +16,7 @@ class Settings:
     encryption_key: str | None
     allow_self_edit: bool
     allow_self_project: bool
+    generate_profiles: bool
 
 
 def load_settings() -> Settings:
@@ -45,6 +46,7 @@ def load_settings() -> Settings:
             key_path.write_text(encryption_key, encoding="utf-8")
     allow_self_edit = os.getenv("AI_DEVTEAM_ALLOW_SELF_EDIT", "true").lower() == "true"
     allow_self_project = os.getenv("AI_DEVTEAM_ALLOW_SELF_PROJECT", "false").lower() == "true"
+    generate_profiles = os.getenv("AI_DEVTEAM_GENERATE_PROFILES", "true").lower() == "true"
     return Settings(
         repo_root=repo_root,
         data_dir=data_dir,
@@ -56,4 +58,5 @@ def load_settings() -> Settings:
         encryption_key=encryption_key,
         allow_self_edit=allow_self_edit,
         allow_self_project=allow_self_project,
+        generate_profiles=generate_profiles,
     )
