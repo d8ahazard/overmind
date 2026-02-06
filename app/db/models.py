@@ -113,3 +113,58 @@ class ProviderBalance(SQLModel, table=True):
     provider: str
     balance_usd: Optional[float] = None
     last_updated: Optional[datetime] = None
+
+
+class Job(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    run_id: int = Field(foreign_key="run.id")
+    status: str = "created"
+    current_state: str = "created"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class JobStep(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    job_id: int = Field(foreign_key="job.id")
+    name: str
+    status: str = "pending"
+    attempts: int = 0
+    started_at: Optional[datetime] = None
+    ended_at: Optional[datetime] = None
+    error: Optional[str] = None
+
+
+class JobEvent(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    job_id: int = Field(foreign_key="job.id")
+    step_id: Optional[int] = Field(default=None, foreign_key="jobstep.id")
+    type: str
+    payload: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class AuditLog(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    run_id: Optional[int] = Field(default=None, foreign_key="run.id")
+    job_id: Optional[int] = Field(default=None, foreign_key="job.id")
+    actor: str
+    action: str
+    tool_name: Optional[str] = None
+    risk_level: Optional[str] = None
+    decision: str
+    request: Optional[str] = None
+    result: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Approval(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    run_id: Optional[int] = Field(default=None, foreign_key="run.id")
+    job_id: Optional[int] = Field(default=None, foreign_key="job.id")
+    actor: str
+    tool_name: Optional[str] = None
+    risk_level: Optional[str] = None
+    status: str = "approved"
+    reason: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)

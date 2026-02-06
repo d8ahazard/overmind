@@ -26,11 +26,14 @@ class OpenAIProvider(ProviderBase):
             data = response.json().get("data", [])
         return [ModelInfo(id=item["id"], provider=self.name) for item in data]
 
-    async def invoke_model(self, model: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        if not self.api_key:
+    async def invoke_model(
+        self, model: str, payload: Dict[str, Any], api_key: str | None = None
+    ) -> Dict[str, Any]:
+        key = api_key or self.api_key
+        if not key:
             raise ProviderError("OPENAI_API_KEY not set")
         prompt = payload.get("prompt", "")
-        headers = {"Authorization": f"Bearer {self.api_key}"}
+        headers = {"Authorization": f"Bearer {key}"}
         body = {"model": model, "messages": [{"role": "user", "content": prompt}]}
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(

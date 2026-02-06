@@ -21,12 +21,15 @@ class AnthropicProvider(ProviderBase):
         # Anthropic does not provide a stable public model list API.
         return []
 
-    async def invoke_model(self, model: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        if not self.api_key:
+    async def invoke_model(
+        self, model: str, payload: Dict[str, Any], api_key: str | None = None
+    ) -> Dict[str, Any]:
+        key = api_key or self.api_key
+        if not key:
             raise ProviderError("ANTHROPIC_API_KEY not set")
         prompt = payload.get("prompt", "")
         headers = {
-            "x-api-key": self.api_key,
+            "x-api-key": key,
             "anthropic-version": "2023-06-01",
         }
         body = {"model": model, "max_tokens": 512, "messages": [{"role": "user", "content": prompt}]}

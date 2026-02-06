@@ -6,6 +6,7 @@ import os
 from sqlmodel import select
 
 from app.core.memory import MemoryStore
+from app.core.secrets import SecretsBroker
 from app.integrations.mcp_client import MCPRegistry
 from app.providers.model_registry import ModelRegistry
 from app.providers.base import ProviderError
@@ -14,10 +15,16 @@ from app.db.session import get_session
 
 
 class AgentRuntime:
-    def __init__(self, registry: ModelRegistry, mcp_registry: MCPRegistry) -> None:
+    def __init__(
+        self,
+        registry: ModelRegistry,
+        mcp_registry: MCPRegistry,
+        secrets_broker: SecretsBroker | None = None,
+    ) -> None:
         self.registry = registry
         self.mcp_registry = mcp_registry
         self.memory = MemoryStore()
+        self.secrets_broker = secrets_broker
 
     async def run_agent(self, run_id: int, agent: AgentConfig, goal: str) -> Dict[str, Any]:
         budget_allowed = self._check_budget(run_id)
@@ -44,6 +51,10 @@ class AgentRuntime:
             f"Goal: {goal}{tools_note}{memory_note}\n"
         )
         payload = {"prompt": prompt, "role": agent.role}
+        if self.secrets_broker:
+            token = self.secrets_broker.issue_provider_token(agent.provider)
+            if token:
+                payload["provider_token"] = token.token
         try:
             response = await self.registry.invoke(agent.provider, agent.model, payload)
         except ProviderError as exc:

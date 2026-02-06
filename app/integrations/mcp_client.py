@@ -14,6 +14,8 @@ class MCPTool:
     name: str
     description: str | None = None
     input_schema: Dict[str, Any] | None = None
+    risk_level: str = "medium"
+    required_scopes: List[str] | None = None
 
 
 @dataclass
@@ -60,6 +62,8 @@ class MCPClient:
                     name=tool.get("name"),
                     description=tool.get("description"),
                     input_schema=tool.get("inputSchema"),
+                    risk_level=tool.get("riskLevel", "medium"),
+                    required_scopes=tool.get("requiredScopes", ["mcp:call"]),
                 )
             )
         return parsed

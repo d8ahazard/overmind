@@ -47,6 +47,23 @@ def upsert_key(payload: dict, request: Request) -> dict:
     return {"status": "ok", "provider": provider}
 
 
+@router.post("/token")
+def issue_token(payload: dict, request: Request) -> dict:
+    provider = payload.get("provider")
+    ttl_seconds = int(payload.get("ttl_seconds", 900))
+    if not provider:
+        raise HTTPException(status_code=400, detail="provider required")
+    broker = request.app.state.secrets_broker
+    token = broker.issue_provider_token(provider, ttl_seconds=ttl_seconds)
+    if not token:
+        raise HTTPException(status_code=404, detail="key not found or broker unavailable")
+    return {
+        "provider": token.provider,
+        "token": token.token,
+        "expires_at": token.expires_at.isoformat(),
+    }
+
+
 @router.delete("/{provider}")
 def delete_key(provider: str) -> dict:
     with get_session() as session:

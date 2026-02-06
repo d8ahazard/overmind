@@ -8,8 +8,10 @@ from pathlib import Path
 from app.agents.runtime import AgentRuntime
 from app.core.artifacts import ArtifactStore
 from app.core.events import Event, EventBus
+from app.core.job_engine import JobEngine, JobStepResult
 from app.core.memory import MemoryStore
-from app.db.models import AgentConfig, Project, Run, Task
+from app.core.verification import Verifier
+from app.db.models import AgentConfig, Job, Project, Run, Task
 from app.db.session import get_session
 from app.repo.file_watcher import FileWatcher
 
@@ -21,12 +23,16 @@ class Orchestrator:
         artifact_store: ArtifactStore,
         agent_runtime: AgentRuntime,
         default_repo_root: Path,
+        job_engine: JobEngine,
+        verifier: Verifier,
     ) -> None:
         self.event_bus = event_bus
         self.artifact_store = artifact_store
         self.agent_runtime = agent_runtime
         self.default_repo_root = default_repo_root
         self.memory_store = MemoryStore()
+        self.job_engine = job_engine
+        self.verifier = verifier
 
     async def _emit(self, run_id: int, event_type: str, payload: dict) -> None:
         event = Event(type=event_type, payload=payload)
@@ -53,27 +59,43 @@ class Orchestrator:
             session.add(run)
             session.commit()
 
+        job = self.job_engine.create_job(run_id)
         watcher = FileWatcher(repo_root, self.event_bus, self.artifact_store, run_id)
-        await self._emit(run_id, "run.started", {"run_id": run_id, "repo_root": str(repo_root)})
+        await self._emit(
+            run_id,
+            "run.started",
+            {"run_id": run_id, "repo_root": str(repo_root), "job_id": job.id},
+        )
         watcher.start()
         try:
-            await self.plan(run_id)
-            await self.execute(run_id)
-            await self.test(run_id)
-            await self.review(run_id)
-            await self.release(run_id)
-            await self.complete_run(run_id)
+            steps = ["scoping", "planning", "executing", "verifying"]
+            handlers = {
+                "scoping": lambda: self._phase_scoping(run_id),
+                "planning": lambda: self._phase_planning(run_id),
+                "executing": lambda: self._phase_executing(run_id),
+                "verifying": lambda: self._phase_verifying(run_id, job.id or 0),
+            }
+            await self.job_engine.run(job, steps, handlers)
+            with get_session() as session:
+                refreshed = session.get(Job, job.id)
+                status = "failed" if refreshed and refreshed.status == "failed" else "completed"
+            await self.complete_run(run_id, status=status)
         finally:
             watcher.stop()
 
-    async def plan(self, run_id: int) -> None:
-        await self._emit(run_id, "phase.planning", {"run_id": run_id})
+    async def _phase_scoping(self, run_id: int) -> JobStepResult:
+        await self._emit(run_id, "phase.scoping", {"run_id": run_id})
+        return JobStepResult(True)
 
-    async def execute(self, run_id: int) -> None:
+    async def _phase_planning(self, run_id: int) -> JobStepResult:
+        await self._emit(run_id, "phase.planning", {"run_id": run_id})
+        return JobStepResult(True)
+
+    async def _phase_executing(self, run_id: int) -> JobStepResult:
         with get_session() as session:
             run = session.get(Run, run_id)
             if not run:
-                return
+                return JobStepResult(False, "run_not_found")
             agents = self._get_agents(run.team_id)
             for agent in agents:
                 response = await self.agent_runtime.run_agent(run_id, agent, run.goal)
@@ -104,6 +126,7 @@ class Orchestrator:
                             "entry_id": entry.id,
                         },
                     )
+        return JobStepResult(True)
 
     async def introduce_team(self, run_id: int) -> None:
         with get_session() as session:
@@ -130,21 +153,17 @@ class Orchestrator:
                     },
                 )
 
-    async def test(self, run_id: int) -> None:
-        await self._emit(run_id, "phase.testing", {"run_id": run_id})
+    async def _phase_verifying(self, run_id: int, job_id: int) -> JobStepResult:
+        await self._emit(run_id, "phase.verifying", {"run_id": run_id})
+        result = await self.verifier.verify(run_id, job_id)
+        return JobStepResult(result.success, result.details)
 
-    async def review(self, run_id: int) -> None:
-        await self._emit(run_id, "phase.review", {"run_id": run_id})
-
-    async def release(self, run_id: int) -> None:
-        await self._emit(run_id, "phase.release", {"run_id": run_id})
-
-    async def complete_run(self, run_id: int) -> None:
+    async def complete_run(self, run_id: int, status: str = "completed") -> None:
         with get_session() as session:
             run = session.get(Run, run_id)
             if not run:
                 return
-            run.status = "completed"
+            run.status = status
             run.end_time = datetime.utcnow()
             session.add(run)
             session.commit()

@@ -6,10 +6,17 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import artifacts, models, projects, runs, tasks, teams
-from app.api.routes import agents, avatars, budgets, chat, keys, mcp, memories, personalities, providers, repo, seed, system
+from app.api.routes import agents, approvals, avatars, budgets, chat, keys, mcp, memories, personalities, providers, repo, seed, system
 from app.api.ws import router as ws_router
 from app.config import load_settings
+from app.core.approvals import ApprovalStore
+from app.core.audit import AuditLogger
 from app.core.events import EventBus
+from app.core.job_engine import JobEngine
+from app.core.policy import PolicyEngine
+from app.core.secrets import SecretsBroker
+from app.core.tool_broker import ToolBroker
+from app.core.verification import NoopVerifier
 from app.core.project_registry import ProjectRegistry, project_data_dir, project_db_url
 from app.db.session import init_db
 from app.core.orchestrator import Orchestrator
@@ -38,6 +45,15 @@ def create_app() -> FastAPI:
     app.state.settings = settings
     app.state.event_bus = EventBus()
     app.state.mcp_registry = MCPRegistry(settings.mcp_endpoints, settings.mcp_discovery_ports)
+    app.state.policy_engine = PolicyEngine()
+    app.state.audit_logger = AuditLogger()
+    app.state.approval_store = ApprovalStore()
+    app.state.tool_broker = ToolBroker(
+        app.state.policy_engine, app.state.audit_logger, app.state.approval_store
+    )
+    app.state.job_engine = JobEngine(app.state.event_bus)
+    app.state.verifier = NoopVerifier()
+    app.state.secrets_broker = SecretsBroker(settings.encryption_key)
     app.state.project_registry = registry
     app.state.active_project_id = active.id
     app.state.active_project_root = active_root
@@ -45,8 +61,14 @@ def create_app() -> FastAPI:
     app.state.orchestrator = Orchestrator(
         app.state.event_bus,
         ArtifactStore(app.state.data_dir),
-        AgentRuntime(ModelRegistry(), app.state.mcp_registry),
+        AgentRuntime(
+            ModelRegistry(app.state.secrets_broker),
+            app.state.mcp_registry,
+            app.state.secrets_broker,
+        ),
         app.state.active_project_root,
+        app.state.job_engine,
+        app.state.verifier,
     )
 
     app.add_middleware(
@@ -70,6 +92,7 @@ def create_app() -> FastAPI:
     app.include_router(memories.router, prefix="/memories", tags=["memories"])
     app.include_router(personalities.router, prefix="/personalities", tags=["personalities"])
     app.include_router(keys.router, prefix="/keys", tags=["keys"])
+    app.include_router(approvals.router, prefix="/approvals", tags=["approvals"])
     app.include_router(providers.router, prefix="/providers", tags=["providers"])
     app.include_router(budgets.router, prefix="/budgets", tags=["budgets"])
     app.include_router(avatars.router, prefix="/avatars", tags=["avatars"])

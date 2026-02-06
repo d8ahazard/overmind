@@ -28,15 +28,18 @@ class GeminiProvider(ProviderBase):
             data = response.json().get("models", [])
         return [ModelInfo(id=item["name"], provider=self.name) for item in data]
 
-    async def invoke_model(self, model: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        if not self.api_key:
+    async def invoke_model(
+        self, model: str, payload: Dict[str, Any], api_key: str | None = None
+    ) -> Dict[str, Any]:
+        key = api_key or self.api_key
+        if not key:
             raise ProviderError("GEMINI_API_KEY not set")
         prompt = payload.get("prompt", "")
         body = {"contents": [{"parts": [{"text": prompt}]}]}
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(
                 f"https://generativelanguage.googleapis.com/v1beta/{model}:generateContent",
-                params={"key": self.api_key},
+                params={"key": key},
                 json=body,
             )
             if response.status_code != 200:

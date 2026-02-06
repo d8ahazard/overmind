@@ -18,10 +18,17 @@ def _get_orchestrator(request: Request) -> Orchestrator:
     settings = request.app.state.settings
     event_bus = request.app.state.event_bus
     mcp_registry = request.app.state.mcp_registry
-    registry = ModelRegistry()
-    runtime = AgentRuntime(registry, mcp_registry)
+    registry = ModelRegistry(request.app.state.secrets_broker)
+    runtime = AgentRuntime(registry, mcp_registry, request.app.state.secrets_broker)
     artifacts = ArtifactStore(request.app.state.data_dir)
-    return Orchestrator(event_bus, artifacts, runtime, request.app.state.active_project_root)
+    return Orchestrator(
+        event_bus,
+        artifacts,
+        runtime,
+        request.app.state.active_project_root,
+        request.app.state.job_engine,
+        request.app.state.verifier,
+    )
 
 
 @router.post("/", response_model=Run)

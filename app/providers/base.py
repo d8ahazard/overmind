@@ -30,5 +30,7 @@ class ProviderBase:
     async def list_models(self) -> List[ModelInfo]:
         raise NotImplementedError
 
-    async def invoke_model(self, model: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    async def invoke_model(
+        self, model: str, payload: Dict[str, Any], api_key: str | None = None
+    ) -> Dict[str, Any]:
         raise NotImplementedError

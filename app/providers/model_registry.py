@@ -2,6 +2,7 @@ import asyncio
 from typing import Any, Dict, List
 
 from app.providers.base import ModelInfo, ProviderBase, ProviderError
+from app.core.secrets import SecretsBroker
 from app.providers.openai_provider import OpenAIProvider
 from app.providers.anthropic_provider import AnthropicProvider
 from app.providers.groq_provider import GroqProvider
@@ -9,7 +10,7 @@ from app.providers.gemini_provider import GeminiProvider
 
 
 class ModelRegistry:
-    def __init__(self) -> None:
+    def __init__(self, secrets_broker: SecretsBroker | None = None) -> None:
         self._providers: Dict[str, ProviderBase] = {
             "openai": OpenAIProvider(),
             "anthropic": AnthropicProvider(),
@@ -18,6 +19,7 @@ class ModelRegistry:
         }
         self._cache: Dict[str, List[ModelInfo]] = {}
         self._lock = asyncio.Lock()
+        self._secrets_broker = secrets_broker
 
     def providers(self) -> List[str]:
         return list(self._providers.keys())
@@ -52,7 +54,11 @@ class ModelRegistry:
     async def invoke(self, provider: str, model: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         if provider not in self._providers:
             raise ProviderError(f"Unknown provider: {provider}")
-        return await self._providers[provider].invoke_model(model, payload)
+        provider_token = payload.pop("provider_token", None)
+        api_key = None
+        if provider_token and self._secrets_broker:
+            api_key = self._secrets_broker.resolve_token(provider_token)
+        return await self._providers[provider].invoke_model(model, payload, api_key=api_key)
 
     async def get_balance(self, provider: str) -> float | None:
         if provider not in self._providers:

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Sequence
 
+from app.core.tool_broker import ToolRequest, ToolResult
+
 
 @dataclass
 class ShellResult:
@@ -45,6 +47,27 @@ def run_command(
         stdout=completed.stdout or "",
         stderr=completed.stderr or "",
         exit_code=completed.returncode,
+    )
+
+
+def execute_shell_tool(request: ToolRequest) -> ToolResult:
+    command = request.arguments.get("command")
+    cwd = request.arguments.get("cwd")
+    allowed_roots = request.arguments.get("allowed_roots", [])
+    if not command or not allowed_roots:
+        return ToolResult(success=False, error="invalid_request")
+    roots = [Path(root) for root in allowed_roots]
+    try:
+        result = run_command(command, cwd=Path(cwd), allowed_roots=roots)
+    except Exception as exc:
+        return ToolResult(success=False, error=str(exc))
+    return ToolResult(
+        success=result.success,
+        output={
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "exit_code": result.exit_code,
+        },
     )
 
 
