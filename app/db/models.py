@@ -165,6 +165,6 @@ class Approval(SQLModel, table=True):
     actor: str
     tool_name: Optional[str] = None
     risk_level: Optional[str] = None
-    status: str = "approved"
+    status: str = "pending"
     reason: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)

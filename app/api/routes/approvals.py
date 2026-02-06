@@ -43,11 +43,47 @@ def update_approval(approval_id: int, payload: dict) -> Approval:
         if not approval:
             raise HTTPException(status_code=404, detail="Approval not found")
         if status:
+            if status not in {"approved", "denied", "pending"}:
+                raise HTTPException(status_code=400, detail="Invalid status")
             approval.status = status
         if actor:
             approval.actor = actor
         if reason is not None:
             approval.reason = reason
+        session.add(approval)
+        session.commit()
+        session.refresh(approval)
+        return approval
+
+
+@router.post("/{approval_id}/approve", response_model=Approval)
+def approve(approval_id: int, payload: dict) -> Approval:
+    with get_session() as session:
+        approval = session.get(Approval, approval_id)
+        if not approval:
+            raise HTTPException(status_code=404, detail="Approval not found")
+        approval.status = "approved"
+        if payload.get("actor"):
+            approval.actor = payload["actor"]
+        if payload.get("reason") is not None:
+            approval.reason = payload["reason"]
+        session.add(approval)
+        session.commit()
+        session.refresh(approval)
+        return approval
+
+
+@router.post("/{approval_id}/deny", response_model=Approval)
+def deny(approval_id: int, payload: dict) -> Approval:
+    with get_session() as session:
+        approval = session.get(Approval, approval_id)
+        if not approval:
+            raise HTTPException(status_code=404, detail="Approval not found")
+        approval.status = "denied"
+        if payload.get("actor"):
+            approval.actor = payload["actor"]
+        if payload.get("reason") is not None:
+            approval.reason = payload["reason"]
         session.add(approval)
         session.commit()
         session.refresh(approval)

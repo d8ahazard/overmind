@@ -52,7 +52,11 @@ class ToolBroker:
     def execute(self, request: ToolRequest, actor_scopes: Iterable[str]) -> ToolResult:
         approved = request.approved
         if not approved and self.approvals:
-            approved = self.approvals.is_approved(request.approval_id)
+            approved = self.approvals.is_approved(
+                request.approval_id,
+                tool_name=request.tool_name,
+                risk_level=request.risk_level,
+            )
         decision = self.policy.evaluate(
             actor_scopes=actor_scopes,
             required_scopes=request.required_scopes,
@@ -96,7 +100,11 @@ class ToolBroker:
     async def execute_async(self, request: ToolRequest, actor_scopes: Iterable[str]) -> ToolResult:
         approved = request.approved
         if not approved and self.approvals:
-            approved = self.approvals.is_approved(request.approval_id)
+            approved = self.approvals.is_approved(
+                request.approval_id,
+                tool_name=request.tool_name,
+                risk_level=request.risk_level,
+            )
         decision = self.policy.evaluate(
             actor_scopes=actor_scopes,
             required_scopes=request.required_scopes,

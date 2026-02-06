@@ -6,7 +6,7 @@
 4) Start the run:
    - JobEngine steps through scoping → planning → executing → verifying.
    - AgentRuntime produces responses and artifacts.
-   - If a high-risk tool is requested, create an approval and pass `approval_id`.
+   - If a high-risk tool is requested, create an approval and approve/deny it via `/approvals/{id}/approve`.
 5) Review:
    - Events and chats stored in `runs/<id>/` artifacts.
    - Audit logs include tool requests and results.
