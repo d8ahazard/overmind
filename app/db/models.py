@@ -1,0 +1,115 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Optional
+
+from sqlmodel import Field, SQLModel
+
+
+class Project(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    repo_url: Optional[str] = None
+    repo_local_path: str
+    default_branch: Optional[str] = None
+    team_framework: Optional[str] = None
+    overview: Optional[str] = None
+    constraints: Optional[str] = None
+    coding_standards: Optional[str] = None
+    definition_of_done: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Team(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(foreign_key="project.id")
+    name: str
+    template: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class AgentConfig(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    team_id: int = Field(foreign_key="team.id")
+    display_name: Optional[str] = None
+    role: str
+    personality: Optional[str] = None
+    avatar_url: Optional[str] = None
+    memory_summary: Optional[str] = None
+    provider: str
+    model: str
+    permissions: Optional[str] = None
+    capabilities: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Run(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(foreign_key="project.id")
+    team_id: int = Field(foreign_key="team.id")
+    goal: str
+    status: str = "created"
+    start_time: datetime = Field(default_factory=datetime.utcnow)
+    end_time: Optional[datetime] = None
+    token_usage: Optional[int] = None
+    cost_estimate: Optional[float] = None
+
+
+class Task(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    run_id: int = Field(foreign_key="run.id")
+    title: str
+    description: Optional[str] = None
+    acceptance_criteria: Optional[str] = None
+    assigned_role: Optional[str] = None
+    dependencies: Optional[str] = None
+    status: str = "pending"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    completed_at: Optional[datetime] = None
+
+
+class Artifact(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    task_id: Optional[int] = Field(default=None, foreign_key="task.id")
+    type: str
+    content: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class AgentMemory(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    run_id: int = Field(foreign_key="run.id")
+    agent_id: int = Field(foreign_key="agentconfig.id")
+    role: str
+    content: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class PersonalityTemplate(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    role: str
+    name: str
+    script: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ProviderKey(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    provider: str
+    encrypted_key: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ProjectBudget(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(foreign_key="project.id")
+    usd_limit: float
+    usd_spent: float = 0.0
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ProviderBalance(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    provider: str
+    balance_usd: Optional[float] = None
+    last_updated: Optional[datetime] = None
