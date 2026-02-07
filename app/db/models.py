@@ -137,6 +137,18 @@ class ProjectBudget(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class ProjectGoal(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(foreign_key="project.id")
+    run_id: Optional[int] = Field(default=None, foreign_key="run.id")
+    task_id: Optional[int] = Field(default=None, foreign_key="task.id")
+    title: str
+    description: Optional[str] = None
+    status: str = "open"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class ProviderBalance(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     provider: str

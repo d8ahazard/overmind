@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import artifacts, models, projects, runs, tasks, teams
-from app.api.routes import agents, approvals, avatars, budgets, chat, events, files, git, keys, mcp, memories, personalities, providers, repo, seed, system
+from app.api.routes import agents, approvals, avatars, budgets, chat, events, files, git, goals, keys, mcp, memories, metrics, personalities, providers, repo, seed, system
 from app.api.ws import router as ws_router
 from app.config import load_settings
 from app.core.approvals import ApprovalStore
@@ -138,12 +138,14 @@ def create_app() -> FastAPI:
     app.include_router(tasks.router, prefix="/tasks", tags=["tasks"])
     app.include_router(artifacts.router, prefix="/artifacts", tags=["artifacts"])
     app.include_router(events.router, prefix="/events", tags=["events"])
+    app.include_router(metrics.router, prefix="/metrics", tags=["metrics"])
     app.include_router(models.router, prefix="/models", tags=["models"])
     app.include_router(agents.router, prefix="/agents", tags=["agents"])
     app.include_router(chat.router, prefix="/chat", tags=["chat"])
     app.include_router(seed.router, prefix="/seed", tags=["seed"])
     app.include_router(mcp.router, prefix="/mcp", tags=["mcp"])
     app.include_router(memories.router, prefix="/memories", tags=["memories"])
+    app.include_router(goals.router, prefix="/goals", tags=["goals"])
     app.include_router(personalities.router, prefix="/personalities", tags=["personalities"])
     app.include_router(keys.router, prefix="/keys", tags=["keys"])
     app.include_router(approvals.router, prefix="/approvals", tags=["approvals"])

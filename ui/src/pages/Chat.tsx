@@ -239,6 +239,17 @@ export default function Chat() {
       setError((err as Error).message);
     }
   };
+
+  const clearChat = () => {
+    setEvents([]);
+    setPendingAgents([]);
+    setTyping(false);
+    setActivity([]);
+    setThinkingAgents([]);
+    setError(null);
+    setPauseMode(null);
+    seenMessageIdsRef.current.clear();
+  };
   const uploadAttachment = async () => {
     setError(null);
     if (!attachment) {
@@ -345,6 +356,9 @@ export default function Chat() {
           />
           <button onClick={introTeam} className="secondary">
             Introduce Team
+          </button>
+          <button onClick={clearChat} className="secondary">
+            Clear Chat
           </button>
         </div>
         <div className="row" style={{ marginTop: 8, alignItems: "center" }}>

@@ -23,6 +23,10 @@ export default function RunConsole() {
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(null as number | null);
   const [selectedEvent, setSelectedEvent] = useState(null as EventMessage | null);
+  const [metricsProject, setMetricsProject] = useState(null as Record<string, any> | null);
+  const [metricsGlobal, setMetricsGlobal] = useState(null as Record<string, any> | null);
+  const [metricsScope, setMetricsScope] = useState("project");
+  const [goals, setGoals] = useState([] as { id: number; title: string; status: string }[]);
 
   useEffect(() => {
     const socket = new WebSocket(`ws://${window.location.host}/ws/events`);
@@ -58,6 +62,26 @@ export default function RunConsole() {
       }
     };
     void loadHistory();
+  }, [runId]);
+
+  useEffect(() => {
+    const loadMetrics = async () => {
+      try {
+        const project = (await apiGet("/metrics/summary?scope=project")) as Record<string, any>;
+        const global = (await apiGet("/metrics/summary?scope=global")) as Record<string, any>;
+        setMetricsProject(project);
+        setMetricsGlobal(global);
+        const goalData = (await apiGet("/goals")) as {
+          id: number;
+          title: string;
+          status: string;
+        }[];
+        setGoals(goalData);
+      } catch {
+        // ignore metrics errors
+      }
+    };
+    void loadMetrics();
   }, [runId]);
 
   const agentMessages = useMemo(
@@ -139,6 +163,13 @@ export default function RunConsole() {
     setSeedInfo(`Seeded run ${result.run_id}`);
   };
 
+  const activeMetrics = metricsScope === "global" ? metricsGlobal : metricsProject;
+  const toolBreakdown = activeMetrics?.tool_breakdown || {};
+  const toolPoints = Object.entries(toolBreakdown).map(([label, value]) => ({
+    label,
+    value: Number(value)
+  }));
+
   return (
     <section>
       <div className="page-header">
@@ -161,9 +192,30 @@ export default function RunConsole() {
           </button>
           {seedInfo && <span className="pill">{seedInfo}</span>}
         </div>
+        <div className="row" style={{ marginTop: 8 }}>
+          <button
+            className={metricsScope === "project" ? "secondary" : ""}
+            onClick={() => setMetricsScope("project")}
+          >
+            Project View
+          </button>
+          <button
+            className={metricsScope === "global" ? "secondary" : ""}
+            onClick={() => setMetricsScope("global")}
+          >
+            Global View
+          </button>
+        </div>
       </div>
       <div className="grid-3">
-        <StatRow title="Run Stats" stats={stats} />
+        <StatRow
+          title="Run Stats"
+          stats={[
+            ...stats,
+            { label: "Tool Calls", value: String(activeMetrics?.tool_calls ?? 0) },
+            { label: "Errors", value: String(activeMetrics?.tool_errors ?? 0) }
+          ]}
+        />
         <div className="card glow">
           <h3>Executive Summary</h3>
           <p className="muted">
@@ -171,9 +223,14 @@ export default function RunConsole() {
             default. Latest memory updates are tracked below.
           </p>
           <div className="row">
-            <span className="pill">Risk: Low</span>
-            <span className="pill">Budget: On Track</span>
-            <span className="pill">ETA: 1 day</span>
+            <span className="pill">
+              Budget: ${activeMetrics?.budget?.usd_spent ?? 0} / $
+              {activeMetrics?.budget?.usd_limit ?? 0}
+            </span>
+            <span className="pill">
+              Approvals: {activeMetrics?.approvals_pending ?? 0} pending
+            </span>
+            <span className="pill">Goals: {Object.keys(activeMetrics?.goals || {}).length}</span>
           </div>
         </div>
         <Workflow steps={workflowSteps} />
@@ -189,6 +246,20 @@ export default function RunConsole() {
             { label: "Agents", value: agentMessages.length }
           ]}
         />
+      </div>
+      <div className="grid-2">
+        <BarChart title="Tool Calls" points={toolPoints} />
+        <div className="card">
+          <h3>Goals</h3>
+          {goals.length === 0 && <div className="muted">No goals defined.</div>}
+          <ul>
+          {goals.map((goal: { id: number; title: string; status: string }) => (
+              <li key={goal.id}>
+                {goal.title} <span className="pill">{goal.status}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
       </div>
       <div className="grid-2">
         <TaskTimeline
