@@ -5,6 +5,7 @@ from typing import Optional
 from sqlmodel import select
 
 from app.core.events import Event, EventBus
+from app.core.memory import MemoryStore
 from app.core.tool_dispatcher import execute_tool_call, extract_tool_call
 from app.db.models import AgentConfig, ProjectSetting, Run, Task, Team
 from app.db.session import get_session
@@ -33,6 +34,7 @@ class WorkerLoop:
         self._chat_seen: dict[int, list[str]] = {}
         self.repo_root = repo_root
         self.allow_self_edit = allow_self_edit
+        self.memory = MemoryStore()
 
     def start(self) -> None:
         if self._running:
@@ -152,6 +154,16 @@ class WorkerLoop:
         }
         self.artifact_store.write_chat(run.id, assigned.role, worker_message)
         await self._emit(run.id, "chat.message", worker_message)
+        self.memory.append(run.id, assigned.id, assigned.role, f"Agent: {response_text}")
+        await self._emit(
+            run.id,
+            "memory.updated",
+            {
+                "agent_id": assigned.id,
+                "agent": assigned.display_name or assigned.role,
+                "content": f"Agent: {response_text}",
+            },
+        )
 
         with get_session() as session:
             task = session.get(Task, task_id)
@@ -305,6 +317,16 @@ class WorkerLoop:
                 }
                 self.artifact_store.write_chat(run.id, agent.role, agent_message)
                 await self._emit(run.id, "chat.message", agent_message)
+                self.memory.append(run.id, agent.id, agent.role, f"Agent: {response_text}")
+                await self._emit(
+                    run.id,
+                    "memory.updated",
+                    {
+                        "agent_id": agent.id,
+                        "agent": agent.display_name or agent.role,
+                        "content": f"Agent: {response_text}",
+                    },
+                )
                 processed += 1
                 if processed >= 2:
                     break

@@ -6,6 +6,7 @@ from typing import Optional
 from sqlmodel import select
 
 from app.core.events import Event, EventBus
+from app.core.memory import MemoryStore
 from app.core.chat_router import ChatRouter, MANAGER_ROLES
 from app.core.tool_dispatcher import execute_tool_call, extract_tool_call
 from app.db.models import AgentConfig, ProjectSetting, Run, Task, Team
@@ -31,6 +32,7 @@ class ManagerLoop:
         self.chat_router = ChatRouter()
         self.repo_root = repo_root
         self.allow_self_edit = allow_self_edit
+        self.memory = MemoryStore()
         self._running = False
 
     def start(self) -> None:
@@ -157,6 +159,16 @@ class ManagerLoop:
         }
         self.artifact_store.write_chat(run.id, assigned.role, worker_message)
         await self._emit(run.id, "chat.message", worker_message)
+        self.memory.append(run.id, assigned.id, assigned.role, f"Agent: {response_text}")
+        await self._emit(
+            run.id,
+            "memory.updated",
+            {
+                "agent_id": assigned.id,
+                "agent": assigned.display_name or assigned.role,
+                "content": f"Agent: {response_text}",
+            },
+        )
 
         review_text = response_text
         if manager:
@@ -178,6 +190,16 @@ class ManagerLoop:
             }
             self.artifact_store.write_chat(run.id, manager.role, review_message)
             await self._emit(run.id, "chat.message", review_message)
+            self.memory.append(run.id, manager.id, manager.role, f"Manager: {review_text}")
+            await self._emit(
+                run.id,
+                "memory.updated",
+                {
+                    "agent_id": manager.id,
+                    "agent": manager.display_name or manager.role,
+                    "content": f"Manager: {review_text}",
+                },
+            )
             await self._emit(
                 run.id,
                 "task.reviewed",

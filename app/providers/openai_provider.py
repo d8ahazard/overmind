@@ -4,6 +4,7 @@ from typing import Any, Dict, List
 import httpx
 
 from app.providers.base import ModelInfo, ProviderBase, ProviderError
+from app.providers.model_filters import is_chat_model
 
 
 class OpenAIProvider(ProviderBase):
@@ -36,18 +37,56 @@ class OpenAIProvider(ProviderBase):
         prompt = payload.get("prompt", "")
         headers = {"Authorization": f"Bearer {key}"}
         chat_body = {"model": model, "messages": [{"role": "user", "content": prompt}]}
+        completion_body = {"model": model, "prompt": prompt}
         async with httpx.AsyncClient(timeout=60) as client:
+            use_chat = is_chat_model(self.name, model)
+            if use_chat:
+                response = await client.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers=headers,
+                    json=chat_body,
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    content = data["choices"][0]["message"]["content"]
+                    return {"content": content}
+                error_text = response.text
+                # Some OpenAI models are only supported on the Responses API.
+                if "v1/responses" in error_text:
+                    response = await client.post(
+                        "https://api.openai.com/v1/responses",
+                        headers=headers,
+                        json={"model": model, "input": prompt},
+                    )
+                    if response.status_code != 200:
+                        raise ProviderError(f"OpenAI invoke failed: {response.text}")
+                    data = response.json()
+                    content = _extract_response_text(data)
+                    return {"content": content}
+                # Some older models only support completions.
+                if "not supported by the chat endpoint" in error_text.lower():
+                    response = await client.post(
+                        "https://api.openai.com/v1/completions",
+                        headers=headers,
+                        json=completion_body,
+                    )
+                    if response.status_code != 200:
+                        raise ProviderError(f"OpenAI invoke failed: {response.text}")
+                    data = response.json()
+                    text = data["choices"][0].get("text", "")
+                    return {"content": text}
+                raise ProviderError(f"OpenAI invoke failed: {error_text}")
+
             response = await client.post(
-                "https://api.openai.com/v1/chat/completions",
+                "https://api.openai.com/v1/completions",
                 headers=headers,
-                json=chat_body,
+                json=completion_body,
             )
             if response.status_code == 200:
                 data = response.json()
-                content = data["choices"][0]["message"]["content"]
-                return {"content": content}
+                text = data["choices"][0].get("text", "")
+                return {"content": text}
             error_text = response.text
-            # Some OpenAI models are only supported on the Responses API.
             if "v1/responses" not in error_text:
                 raise ProviderError(f"OpenAI invoke failed: {error_text}")
             response = await client.post(
