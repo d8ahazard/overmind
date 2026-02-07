@@ -8,7 +8,7 @@ from sqlmodel import select
 from app.core.events import Event, EventBus
 from app.core.memory import MemoryStore
 from app.core.chat_router import ChatRouter, MANAGER_ROLES
-from app.core.tool_dispatcher import execute_tool_call, extract_tool_call
+from app.core.tool_dispatcher import execute_tool_call, extract_tool_call, normalize_tool_response
 from app.db.models import AgentConfig, ProjectSetting, Run, Task, Team
 from app.db.session import get_session
 
@@ -151,6 +151,7 @@ class ManagerLoop:
                 event_bus=self.event_bus,
                 artifact_store=self.artifact_store,
             )
+            response_text = normalize_tool_response(response_text)
         worker_message = {
             "agent": assigned.display_name or assigned.role,
             "role": assigned.role,

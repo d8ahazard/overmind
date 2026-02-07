@@ -11,7 +11,7 @@ from app.core.events import Event
 from app.core.memory import MemoryStore
 from app.core.artifacts import ArtifactStore
 from app.core.orchestrator import Orchestrator
-from app.core.tool_dispatcher import extract_tool_call, execute_tool_call
+from app.core.tool_dispatcher import extract_tool_call, execute_tool_call, normalize_tool_response
 from app.core.project_registry import project_attachments_dir
 from app.db.models import AgentConfig, ProjectSetting, Run, Team, Task
 from app.db.session import get_session
@@ -138,6 +138,12 @@ async def send_message(payload: dict, request: Request) -> dict:
             artifacts = ArtifactStore(request.app.state.data_dir)
             artifacts.write_event(run.id, resume_event.__dict__)
             await request.app.state.event_bus.publish(resume_event)
+            await _emit_system_message(
+                artifacts,
+                request.app.state.event_bus,
+                run,
+                "Team resumed from break/attention mode.",
+            )
 
     event_bus = request.app.state.event_bus
     artifacts = ArtifactStore(request.app.state.data_dir)
@@ -321,6 +327,9 @@ async def send_message(payload: dict, request: Request) -> dict:
         response_text = (response.get("content") or "").strip()
         tool_call = extract_tool_call(response_text)
         if tool_call:
+            allow_file_edits = bool(setting and setting.auto_execute_edits) and (
+                "developer" in agent.role.lower() or "engineer" in agent.role.lower()
+            )
             tool_result = await execute_tool_call(
                 tool_call,
                 broker=tool_broker,
@@ -329,11 +338,11 @@ async def send_message(payload: dict, request: Request) -> dict:
                 repo_root=request.app.state.active_project_root,
                 allow_self_edit=request.app.state.settings.allow_self_edit,
                 extra_allowed_roots=[request.app.state.settings.repo_root],
-                allow_file_edits=False,
+                allow_file_edits=allow_file_edits,
                 event_bus=event_bus,
                 artifact_store=artifacts,
             )
-            response_text = tool_result
+            response_text = normalize_tool_response(tool_result)
         if allow_no_response and response_text.upper() == "NO_RESPONSE":
             return None
         agent_message = {
@@ -364,7 +373,9 @@ async def send_message(payload: dict, request: Request) -> dict:
                 "You must respond with a status update and next action. "
                 "When responding, address teammates with @mentions as needed. "
                 "Use role tags like @po, @dm, @tl, @dev, @qa, @rm when appropriate. "
-                "If you are blocked or done, ask @po or @dm what to do next."
+                "If you are blocked or done, ask @po or @dm what to do next. "
+                "If a tool is required, respond with ONLY a JSON object:\n"
+                '{\"tool\":\"system.run\",\"arguments\":{\"command\":\"whoami\"}}'
             )
             allow_no_response = False
         else:

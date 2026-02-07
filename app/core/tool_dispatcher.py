@@ -26,6 +26,23 @@ def extract_tool_call(text: str) -> dict | None:
     return None
 
 
+def normalize_tool_response(text: str) -> str:
+    if not text or not text.startswith("Tool execution blocked:"):
+        return text
+    reason = text.split(":", 1)[1].strip()
+    if reason.startswith("approval_required"):
+        parts = reason.split(":", 1)
+        approval_id = parts[1] if len(parts) > 1 else None
+        if approval_id:
+            return f"Unable to run tool: approval required (ID {approval_id}). Please approve."
+        return "Unable to run tool: approval required. Please approve."
+    if reason == "file_edits_disabled":
+        return "Unable to run tool: file edits are disabled for this role or project."
+    if reason == "approval_required":
+        return "Unable to run tool: approval required."
+    return f"Unable to run tool: {reason}."
+
+
 async def execute_tool_call(
     tool_call: dict,
     *,
