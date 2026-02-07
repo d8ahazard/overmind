@@ -15,6 +15,8 @@ type ProjectSettings = {
   default_tool_scopes?: string | null;
   role_tool_scopes?: string | null;
   allow_pm_merge?: boolean | null;
+  auto_execute_edits?: boolean | null;
+  require_pm_pr_approval?: boolean | null;
   chat_target_policy?: string | null;
   task_retry_limit?: number | null;
   model_defaults?: string | null;
@@ -81,12 +83,12 @@ const ROLE_OPTIONS = [
 ];
 
 const ROLE_SCOPE_DEFAULTS: Record<string, string> = {
-  "Product Owner": "system:run,git:status,git:diff,git:branch,git:commit,git:pr",
-  "Delivery Manager": "system:run,git:status,git:diff,git:branch,git:commit,git:pr",
-  "Tech Lead": "system:run,git:status,git:diff,git:branch,git:commit,git:pr",
-  Developer: "system:run,git:status,git:diff,git:branch,git:commit,git:pr",
-  "QA Engineer": "system:run,git:status,git:diff",
-  "Release Manager": "system:run,git:status,git:diff,git:branch,git:commit,git:pr"
+  "Product Owner": "system:run,file:read,file:write,git:status,git:diff,git:branch,git:commit,git:pr",
+  "Delivery Manager": "system:run,file:read,file:write,git:status,git:diff,git:branch,git:commit,git:pr",
+  "Tech Lead": "system:run,file:read,file:write,git:status,git:diff,git:branch,git:commit,git:pr",
+  Developer: "system:run,file:read,file:write,git:status,git:diff,git:branch,git:commit,git:pr",
+  "QA Engineer": "system:run,file:read,git:status,git:diff",
+  "Release Manager": "system:run,file:read,file:write,git:status,git:diff,git:branch,git:commit,git:pr"
 };
 
 const MEMORY_STRATEGIES = ["rolling", "latest", "none"];
@@ -505,6 +507,24 @@ export default function Projects() {
             type="checkbox"
             checked={projectSettings?.allow_pm_merge ?? false}
             onChange={(e) => updateProjectSettings({ allow_pm_merge: e.target.checked })}
+          />
+        </div>
+        <div className="row" style={{ marginTop: 8 }}>
+          <label className="pill">Auto-execute file edits</label>
+          <input
+            type="checkbox"
+            checked={projectSettings?.auto_execute_edits ?? true}
+            onChange={(e) => updateProjectSettings({ auto_execute_edits: e.target.checked })}
+          />
+        </div>
+        <div className="row" style={{ marginTop: 8 }}>
+          <label className="pill">Require PM approval before PR</label>
+          <input
+            type="checkbox"
+            checked={projectSettings?.require_pm_pr_approval ?? true}
+            onChange={(e) =>
+              updateProjectSettings({ require_pm_pr_approval: e.target.checked })
+            }
           />
         </div>
         <div className="row" style={{ marginTop: 8 }}>

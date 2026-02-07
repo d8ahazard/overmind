@@ -1,15 +1,12 @@
 import asyncio
-import json
 from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlmodel import select
 
 from app.core.events import Event, EventBus
-from app.core.tool_broker import ToolRequest
-from app.core.git_tools import execute_git_tool
-from app.core.shell import is_destructive_command
-from app.db.models import AgentConfig, Run, Task, Team
+from app.core.tool_dispatcher import execute_tool_call, extract_tool_call
+from app.db.models import AgentConfig, ProjectSetting, Run, Task, Team
 from app.db.session import get_session
 from app.core.chat_router import MANAGER_ROLES
 
@@ -23,6 +20,7 @@ class WorkerLoop:
         tool_broker,
         artifact_store,
         repo_root,
+        allow_self_edit: bool,
     ) -> None:
         self.event_bus = event_bus
         self.get_active_project_id = get_active_project_id
@@ -34,6 +32,7 @@ class WorkerLoop:
         self._manager_prompted: dict[int, datetime] = {}
         self._chat_seen: dict[int, list[str]] = {}
         self.repo_root = repo_root
+        self.allow_self_edit = allow_self_edit
 
     def start(self) -> None:
         if self._running:
@@ -85,6 +84,9 @@ class WorkerLoop:
                 return
             team = session.get(Team, run.team_id)
             agents = list(session.exec(select(AgentConfig).where(AgentConfig.team_id == team.id)))
+            setting = session.exec(
+                select(ProjectSetting).where(ProjectSetting.project_id == run.project_id)
+            ).first()
             assigned = _pick_agent(agents, task)
             if not assigned:
                 return
@@ -101,20 +103,43 @@ class WorkerLoop:
             {"task_id": task.id, "assigned_role": assigned.role, "title": task.title},
         )
 
+        tool_note = (
+            "If you need to edit code, use ONLY JSON tool calls like:\n"
+            '{"tool":"file.read","arguments":{"path":"src/app.ts"}}\n'
+            '{"tool":"file.replace","arguments":{"path":"src/app.ts","old":"foo","new":"bar"}}\n'
+            '{"tool":"file.write","arguments":{"path":"src/app.ts","content":"..."}}\n'
+            "When done, create a branch/commit/PR:\n"
+            '{"tool":"git.branch","arguments":{"name":"feature/short-desc"}}\n'
+            '{"tool":"git.commit","arguments":{"message":"Describe change"}}\n'
+            '{"tool":"git.create_pr","arguments":{"branch":"feature/short-desc"}}\n'
+        )
         prompt = (
             f"Task: {task.title}\n"
             f"Details: {task.description or ''}\n"
             "Work autonomously and report progress. "
             "If blocked or done, ask @po or @dm for next steps.\n"
             "If a tool is required, respond with ONLY JSON:\n"
-            '{\"tool\":\"system.run\",\"arguments\":{\"command\":\"whoami\"}}'
+            '{\"tool\":\"system.run\",\"arguments\":{\"command\":\"whoami\"}}\n'
+            + (tool_note if "developer" in assigned.role.lower() or "engineer" in assigned.role.lower() else "")
         )
         response = await self.agent_runtime.run_agent(run.id, assigned, prompt)
         response_text = (response.get("content") or "").strip()
-        tool_call = _extract_tool_call(response_text)
+        tool_call = extract_tool_call(response_text)
         if tool_call:
-            response_text = await self._execute_tool_call(
-                tool_call, assigned, run.id
+            allow_file_edits = bool(setting and setting.auto_execute_edits) and (
+                "developer" in assigned.role.lower() or "engineer" in assigned.role.lower()
+            )
+            response_text = await execute_tool_call(
+                tool_call,
+                broker=self.tool_broker,
+                agent=assigned,
+                run_id=run.id,
+                repo_root=self.repo_root,
+                allow_self_edit=self.allow_self_edit,
+                extra_allowed_roots=None,
+                allow_file_edits=allow_file_edits,
+                event_bus=self.event_bus,
+                artifact_store=self.artifact_store,
             )
 
         worker_message = {
@@ -213,6 +238,10 @@ class WorkerLoop:
         messages = self.artifact_store.read_chats(run.id)
         if not messages:
             return
+        with get_session() as session:
+            setting = session.exec(
+                select(ProjectSetting).where(ProjectSetting.project_id == run.project_id)
+            ).first()
         for agent in agents:
             if not agent.id:
                 continue
@@ -242,6 +271,24 @@ class WorkerLoop:
                 )
                 response = await self.agent_runtime.run_agent(run.id, agent, prompt)
                 response_text = (response.get("content") or "").strip()
+                tool_call = extract_tool_call(response_text)
+                if tool_call:
+                    allow_file_edits = bool(setting and setting.auto_execute_edits) and (
+                        "developer" in agent.role.lower()
+                        or "engineer" in agent.role.lower()
+                    )
+                    response_text = await execute_tool_call(
+                        tool_call,
+                        broker=self.tool_broker,
+                        agent=agent,
+                        run_id=run.id,
+                        repo_root=self.repo_root,
+                        allow_self_edit=self.allow_self_edit,
+                        extra_allowed_roots=None,
+                        allow_file_edits=allow_file_edits,
+                        event_bus=self.event_bus,
+                        artifact_store=self.artifact_store,
+                    )
                 if response_text.upper() == "NO_RESPONSE":
                     processed += 1
                     if processed >= 2:
@@ -261,54 +308,12 @@ class WorkerLoop:
                     break
             self._chat_seen[agent.id] = seen
 
-    async def _execute_tool_call(self, tool_call: dict, agent: AgentConfig, run_id: int) -> str:
-        tool_name = tool_call.get("tool")
-        arguments = tool_call.get("arguments") or {}
-        if tool_name == "system.run":
-            if is_destructive_command(arguments.get("command")):
-                return "Tool execution blocked: approval_required"
-            required_scopes = ["system:run"]
-        elif tool_name and tool_name.startswith("git."):
-            if tool_name not in self.tool_broker.executors:
-                self.tool_broker.register(
-                    tool_name,
-                    lambda tool_request: execute_git_tool(tool_request, self.repo_root),
-                )
-            required_scopes = [f"git:{tool_name.split('.', 1)[1]}"]
-        else:
-            required_scopes = ["mcp:call"]
-        actor_scopes = [
-            item.strip() for item in (agent.permissions or "").split(",") if item.strip()
-        ]
-        tool_request = ToolRequest(
-            tool_name=tool_name,
-            arguments=arguments,
-            required_scopes=required_scopes,
-            actor=agent.display_name or agent.role,
-            run_id=run_id,
-        )
-        result = await self.tool_broker.execute_async(tool_request, actor_scopes)
-        if not result.success:
-            return f"Tool execution blocked: {result.error}"
-        return json.dumps(result.output or {}, ensure_ascii=True)
-
     async def _emit(self, run_id: int, event_type: str, payload: dict) -> None:
         event = Event(type=event_type, payload=payload)
         self.artifact_store.write_event(run_id, event.__dict__)
         await self.event_bus.publish(event)
 
 
-def _extract_tool_call(text: str) -> dict | None:
-    if not text:
-        return None
-    if text.startswith("{") and text.endswith("}"):
-        try:
-            data = json.loads(text)
-            if isinstance(data, dict) and data.get("tool") and data.get("arguments"):
-                return data
-        except Exception:
-            return None
-    return None
 
 
 def _pick_agent(agents: list[AgentConfig], task: Task) -> Optional[AgentConfig]:

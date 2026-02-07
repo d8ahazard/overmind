@@ -11,10 +11,7 @@ from app.core.events import Event
 from app.core.memory import MemoryStore
 from app.core.artifacts import ArtifactStore
 from app.core.orchestrator import Orchestrator
-from app.core.shell import execute_shell_tool, is_destructive_command
-from app.core.git_tools import execute_git_tool
-from app.integrations.mcp_client import MCPClient
-from app.core.tool_broker import ToolRequest, ToolResult
+from app.core.tool_dispatcher import extract_tool_call, execute_tool_call
 from app.core.project_registry import project_attachments_dir
 from app.db.models import AgentConfig, ProjectSetting, Run, Team, Task
 from app.db.session import get_session
@@ -262,10 +259,19 @@ async def send_message(payload: dict, request: Request) -> dict:
         )
         response = await agent_runtime.run_agent(run.id, agent, prompt)
         response_text = (response.get("content") or "").strip()
-        tool_call = _extract_tool_call(response_text)
+        tool_call = extract_tool_call(response_text)
         if tool_call:
-            tool_result = await _execute_tool_call(
-                tool_call, request, tool_broker, agent, run.id
+            tool_result = await execute_tool_call(
+                tool_call,
+                broker=tool_broker,
+                agent=agent,
+                run_id=run.id,
+                repo_root=request.app.state.active_project_root,
+                allow_self_edit=request.app.state.settings.allow_self_edit,
+                extra_allowed_roots=[request.app.state.settings.repo_root],
+                allow_file_edits=False,
+                event_bus=event_bus,
+                artifact_store=artifacts,
             )
             response_text = tool_result
         if allow_no_response and response_text.upper() == "NO_RESPONSE":
@@ -469,98 +475,6 @@ def _extract_json_payload(text: str) -> dict | None:
     except Exception:
         return None
     return None
-
-
-def _extract_tool_call(text: str) -> dict | None:
-    if not text:
-        return None
-    if text.startswith("{") and text.endswith("}"):
-        try:
-            data = json.loads(text)
-            if isinstance(data, dict) and data.get("tool") and data.get("arguments"):
-                return data
-        except Exception:
-            return None
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        return None
-    snippet = text[start : end + 1]
-    try:
-        data = json.loads(snippet)
-        if isinstance(data, dict) and data.get("tool") and data.get("arguments"):
-            return data
-    except Exception:
-        return None
-    return None
-
-
-async def _execute_tool_call(
-    tool_call: dict,
-    request: Request,
-    broker,
-    agent: AgentConfig,
-    run_id: int,
-) -> str:
-    tool_name = tool_call.get("tool")
-    arguments = tool_call.get("arguments") or {}
-    if tool_name not in {"system.run", "mcp.call"} and not tool_name.startswith("git."):
-        return f"Tool execution blocked: unknown tool {tool_name}."
-
-    if tool_name == "system.run":
-        if "system.run" not in broker.executors:
-            broker.register("system.run", execute_shell_tool)
-        if "cwd" not in arguments:
-            arguments["cwd"] = str(request.app.state.active_project_root)
-        if "allowed_roots" not in arguments:
-            allowed = [str(request.app.state.active_project_root)]
-            if request.app.state.settings.allow_self_edit:
-                allowed.append(str(request.app.state.settings.repo_root))
-            arguments["allowed_roots"] = allowed
-        required_scopes = ["system:run"]
-        destructive = is_destructive_command(arguments.get("command"))
-        if destructive and not tool_call.get("approval_id"):
-            return "Tool execution blocked: approval_required"
-        risk_level = "critical" if destructive else "low"
-    elif tool_name.startswith("git."):
-        if tool_name not in broker.executors:
-            broker.register(
-                tool_name,
-                lambda tool_request: execute_git_tool(
-                    tool_request, request.app.state.active_project_root
-                ),
-            )
-        required_scopes = [f"git:{tool_name.split('.', 1)[1]}"]
-        risk_level = "high" if tool_name == "git.merge" else "low"
-    else:
-        if "mcp.call" not in broker.executors:
-            async def _executor(tool_request: ToolRequest):
-                client = MCPClient(tool_request.arguments["url"])
-                await client.initialize()
-                result = await client.call_tool(
-                    tool_request.arguments["name"],
-                    tool_request.arguments.get("arguments", {}),
-                )
-                return ToolResult(success=True, output=result)
-            broker.register("mcp.call", _executor)
-        required_scopes = ["mcp:call"]
-        risk_level = "low"
-
-    actor_scopes = [
-        item.strip() for item in (agent.permissions or "").split(",") if item.strip()
-    ]
-    tool_request = ToolRequest(
-        tool_name=tool_name,
-        arguments=arguments,
-        required_scopes=required_scopes,
-        actor=agent.display_name or agent.role,
-        risk_level=risk_level,
-        run_id=run_id,
-    )
-    result = await broker.execute_async(tool_request, actor_scopes)
-    if not result.success:
-        return f"Tool execution blocked: {result.error}"
-    return json.dumps(result.output or {}, ensure_ascii=True)
 
 
 @router.post("/upload")

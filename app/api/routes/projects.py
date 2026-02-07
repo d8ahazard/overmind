@@ -24,6 +24,8 @@ def _get_setting(session, project_id: int) -> ProjectSetting:
             default_tool_scopes=None,
             role_tool_scopes=None,
             allow_pm_merge=False,
+            auto_execute_edits=True,
+            require_pm_pr_approval=True,
             model_defaults=None,
             memory_profiles=None,
             mcp_endpoints=None,
@@ -170,6 +172,8 @@ def get_project_settings(request: Request) -> dict:
         "default_tool_scopes": setting.default_tool_scopes,
         "role_tool_scopes": setting.role_tool_scopes,
         "allow_pm_merge": setting.allow_pm_merge,
+        "auto_execute_edits": setting.auto_execute_edits,
+        "require_pm_pr_approval": setting.require_pm_pr_approval,
         "chat_target_policy": setting.chat_target_policy,
         "task_retry_limit": setting.task_retry_limit,
         "model_defaults": setting.model_defaults,
@@ -190,6 +194,8 @@ def update_project_settings(payload: dict, request: Request) -> dict:
     default_tool_scopes = payload.get("default_tool_scopes")
     role_tool_scopes = payload.get("role_tool_scopes")
     allow_pm_merge = payload.get("allow_pm_merge")
+    auto_execute_edits = payload.get("auto_execute_edits")
+    require_pm_pr_approval = payload.get("require_pm_pr_approval")
     chat_target_policy = payload.get("chat_target_policy")
     task_retry_limit = payload.get("task_retry_limit")
     model_defaults = payload.get("model_defaults")
@@ -209,6 +215,10 @@ def update_project_settings(payload: dict, request: Request) -> dict:
             setting.role_tool_scopes = str(role_tool_scopes) or None
         if allow_pm_merge is not None:
             setting.allow_pm_merge = bool(allow_pm_merge)
+        if auto_execute_edits is not None:
+            setting.auto_execute_edits = bool(auto_execute_edits)
+        if require_pm_pr_approval is not None:
+            setting.require_pm_pr_approval = bool(require_pm_pr_approval)
         if chat_target_policy is not None:
             setting.chat_target_policy = str(chat_target_policy)
         if task_retry_limit is not None:
@@ -238,6 +248,8 @@ def update_project_settings(payload: dict, request: Request) -> dict:
         "default_tool_scopes": setting.default_tool_scopes,
         "role_tool_scopes": setting.role_tool_scopes,
         "allow_pm_merge": setting.allow_pm_merge,
+        "auto_execute_edits": setting.auto_execute_edits,
+        "require_pm_pr_approval": setting.require_pm_pr_approval,
         "chat_target_policy": setting.chat_target_policy,
         "task_retry_limit": setting.task_retry_limit,
         "model_defaults": setting.model_defaults,

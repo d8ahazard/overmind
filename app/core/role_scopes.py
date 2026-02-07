@@ -4,12 +4,12 @@ from typing import Dict
 from app.db.models import ProjectSetting
 
 DEFAULT_ROLE_SCOPES: Dict[str, str] = {
-    "Product Owner": "system:run,git:status,git:diff,git:branch,git:commit,git:pr",
-    "Delivery Manager": "system:run,git:status,git:diff,git:branch,git:commit,git:pr",
-    "Tech Lead": "system:run,git:status,git:diff,git:branch,git:commit,git:pr",
-    "Developer": "system:run,git:status,git:diff,git:branch,git:commit,git:pr",
-    "QA Engineer": "system:run,git:status,git:diff",
-    "Release Manager": "system:run,git:status,git:diff,git:branch,git:commit,git:pr",
+    "Product Owner": "system:run,file:read,file:write,git:status,git:diff,git:branch,git:commit,git:pr",
+    "Delivery Manager": "system:run,file:read,file:write,git:status,git:diff,git:branch,git:commit,git:pr",
+    "Tech Lead": "system:run,file:read,file:write,git:status,git:diff,git:branch,git:commit,git:pr",
+    "Developer": "system:run,file:read,file:write,git:status,git:diff,git:branch,git:commit,git:pr",
+    "QA Engineer": "system:run,file:read,git:status,git:diff",
+    "Release Manager": "system:run,file:read,file:write,git:status,git:diff,git:branch,git:commit,git:pr",
 }
 
 
