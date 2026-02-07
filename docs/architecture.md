@@ -38,3 +38,8 @@ flowchart TD
 - Integrations are MCP discovery only; connectors are stubbed.
 - Verification is currently no-op; test execution and artifact checks are pending.
 - Secrets broker issues capability tokens but providers still use env keys.
+
+## Team Commands
+- `@break`: pauses all agent work for the active run.
+- `@attention`: pauses work and calls a team meeting.
+- `@resume`: resumes work (any stakeholder message also resumes).

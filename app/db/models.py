@@ -77,6 +77,9 @@ class Run(SQLModel, table=True):
     end_time: Optional[datetime] = None
     token_usage: Optional[int] = None
     cost_estimate: Optional[float] = None
+    pause_mode: Optional[str] = None
+    pause_by: Optional[str] = None
+    pause_at: Optional[datetime] = None
 
 
 class Task(SQLModel, table=True):

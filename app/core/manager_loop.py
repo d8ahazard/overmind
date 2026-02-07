@@ -74,6 +74,8 @@ class ManagerLoop:
             run = session.get(Run, task.run_id)
             if not run:
                 return
+            if run.pause_mode:
+                return
             retry_limit = 3
             setting = session.exec(
                 select(ProjectSetting).where(ProjectSetting.project_id == run.project_id)

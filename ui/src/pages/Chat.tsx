@@ -26,6 +26,7 @@ export default function Chat() {
   const [error, setError] = useState(null as string | null);
   const [activity, setActivity] = useState([] as string[]);
   const [thinkingAgents, setThinkingAgents] = useState([] as string[]);
+  const [pauseMode, setPauseMode] = useState(null as string | null);
   const fileInputRef = useRef(null as HTMLInputElement | null);
   const seenMessageIdsRef = useRef(new Set<string>());
 
@@ -84,6 +85,15 @@ export default function Chat() {
         if (payload?.type === "tool.completed") {
           console.log("tool.completed", payload.payload);
         }
+        if (payload?.type === "team.break") {
+          setPauseMode("break");
+        }
+        if (payload?.type === "team.attention") {
+          setPauseMode("attention");
+        }
+        if (payload?.type === "team.resume") {
+          setPauseMode(null);
+        }
       } catch {
         // ignore
       }
@@ -115,7 +125,11 @@ export default function Chat() {
       try {
         const history = (await apiGet(
           runId ? `/chat/history?run_id=${runId}` : "/chat/history"
-        )) as { run_id: number | null; messages: ChatHistoryItem[] };
+        )) as {
+          run_id: number | null;
+          messages: ChatHistoryItem[];
+          pause_mode?: string | null;
+        };
         if (history.run_id && !runId) {
           setRunId(history.run_id);
         }
@@ -143,6 +157,9 @@ export default function Chat() {
         }));
         if (items.length) {
           setEvents((prev: EventMessage[]) => [...items, ...prev].slice(-200));
+        }
+        if (history.pause_mode) {
+          setPauseMode(history.pause_mode);
         }
       } catch {
         // ignore history load errors
@@ -256,6 +273,13 @@ export default function Chat() {
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
       <div className="card" style={{ minHeight: 420 }}>
         <div style={{ maxHeight: 420, overflowY: "auto", paddingBottom: 8 }}>
+          {pauseMode && (
+            <div className="muted" style={{ marginBottom: 8 }}>
+              {pauseMode === "break"
+                ? "Break mode active. Team work is paused."
+                : "Attention mode active. Team meeting requested."}
+            </div>
+          )}
           {chatMessages.length === 0 && <div className="muted">No messages yet.</div>}
           {chatMessages.map(
             (

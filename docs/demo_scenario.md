@@ -15,3 +15,8 @@ Expected outputs:
 - Run status transitions in DB.
 - Artifact snapshots for chat and events.
 - Verification step records success.
+
+Team commands:
+- `@break`: pauses all agent work for the active run.
+- `@attention`: pauses work and calls a team meeting.
+- `@resume`: resumes work (any stakeholder message also resumes).

@@ -549,6 +549,14 @@ complete_run()
 
 ---
 
+# Team Commands
+
+- `@break`: pauses all agent work for the active run.
+- `@attention`: pauses work and calls a team meeting.
+- `@resume`: resumes work (any stakeholder message also resumes).
+
+---
+
 # Concurrency Control
 
 Rules:

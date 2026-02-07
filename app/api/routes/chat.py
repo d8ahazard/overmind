@@ -35,7 +35,11 @@ def chat_history(request: Request, run_id: int | None = None) -> dict:
         if not run:
             return {"run_id": None, "messages": []}
     store = ArtifactStore(request.app.state.data_dir)
-    return {"run_id": run.id, "messages": store.read_chats(run.id)}
+    return {
+        "run_id": run.id,
+        "messages": store.read_chats(run.id),
+        "pause_mode": run.pause_mode,
+    }
 
 
 @router.post("/send")
@@ -78,6 +82,62 @@ async def send_message(payload: dict, request: Request) -> dict:
             best_agent = _pick_best_agent(run.team_id, message)
             if best_agent and best_agent not in targets:
                 targets.append(best_agent)
+
+        command = _extract_command(message)
+        if command in {"break", "attention"}:
+            _set_pause_mode(session, run, command, "Stakeholder")
+            session.add(run)
+            session.commit()
+            mode_event = Event(
+                type=f"team.{command}",
+                payload={
+                    "run_id": run.id,
+                    "mode": command,
+                    "actor": "Stakeholder",
+                },
+            )
+            artifacts = ArtifactStore(request.app.state.data_dir)
+            artifacts.write_event(run.id, mode_event.__dict__)
+            await request.app.state.event_bus.publish(mode_event)
+            await _emit_system_message(
+                artifacts,
+                request.app.state.event_bus,
+                run,
+                f"Team {command} mode enabled. Waiting for stakeholder instructions.",
+            )
+            if command == "attention":
+                await _emit_attention_notice(request, run)
+            return {"status": "ok", "run_id": run.id, "mode": command, "targets": []}
+        if command == "resume":
+            if run.pause_mode:
+                _clear_pause_mode(session, run)
+                session.add(run)
+                session.commit()
+                resume_event = Event(
+                    type="team.resume",
+                    payload={"run_id": run.id, "mode": "resume", "actor": "Stakeholder"},
+                )
+                artifacts = ArtifactStore(request.app.state.data_dir)
+                artifacts.write_event(run.id, resume_event.__dict__)
+                await request.app.state.event_bus.publish(resume_event)
+                await _emit_system_message(
+                    artifacts,
+                    request.app.state.event_bus,
+                    run,
+                    "Team resumed.",
+                )
+            return {"status": "ok", "run_id": run.id, "mode": "resume", "targets": []}
+        if run.pause_mode:
+            _clear_pause_mode(session, run)
+            session.add(run)
+            session.commit()
+            resume_event = Event(
+                type="team.resume",
+                payload={"run_id": run.id, "mode": "resume", "actor": "Stakeholder"},
+            )
+            artifacts = ArtifactStore(request.app.state.data_dir)
+            artifacts.write_event(run.id, resume_event.__dict__)
+            await request.app.state.event_bus.publish(resume_event)
 
     event_bus = request.app.state.event_bus
     artifacts = ArtifactStore(request.app.state.data_dir)
@@ -458,6 +518,62 @@ def _pick_manager(agents: list[AgentConfig]) -> AgentConfig | None:
             if agent.role == role:
                 return agent
     return agents[0]
+
+
+def _extract_command(message: str) -> str | None:
+    if not message:
+        return None
+    lower = message.strip().lower()
+    if "@break" in lower:
+        return "break"
+    if "@attention" in lower:
+        return "attention"
+    if "@resume" in lower:
+        return "resume"
+    return None
+
+
+def _set_pause_mode(session, run: Run, mode: str, actor: str) -> None:
+    run.pause_mode = mode
+    run.pause_by = actor
+    run.pause_at = datetime.utcnow()
+    session.add(run)
+
+
+def _clear_pause_mode(session, run: Run) -> None:
+    run.pause_mode = None
+    run.pause_by = None
+    run.pause_at = None
+    session.add(run)
+
+
+async def _emit_system_message(
+    artifacts: ArtifactStore, event_bus, run: Run, content: str
+) -> None:
+    system_message = {
+        "message_id": str(uuid.uuid4()),
+        "agent": "System",
+        "role": "System",
+        "content": content,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+    artifacts.write_chat(run.id, "System", system_message)
+    event = Event(type="chat.message", payload=system_message)
+    artifacts.write_event(run.id, event.__dict__)
+    await event_bus.publish(event)
+
+
+async def _emit_attention_notice(request: Request, run: Run) -> None:
+    with get_session() as session:
+        agents = list(session.exec(select(AgentConfig).where(AgentConfig.team_id == run.team_id)))
+    notice = {
+        "title": "Attention requested",
+        "body": "Stakeholder has called a team meeting. Await instructions.",
+        "targets": [t.display_name or t.role for t in agents],
+    }
+    await request.app.state.event_bus.publish(
+        Event(type="notification.requested", payload=notice)
+    )
 
 
 def _extract_json_payload(text: str) -> dict | None:

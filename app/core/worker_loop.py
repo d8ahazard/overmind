@@ -71,6 +71,8 @@ class WorkerLoop:
         for task in tasks[:5]:
             await self._handle_task(task.id)
         if run:
+            if run.pause_mode:
+                return
             await self._prompt_idle(run, agents)
             await self._process_chat(run, agents)
 

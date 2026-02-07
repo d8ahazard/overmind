@@ -59,6 +59,12 @@ Open:
 http://127.0.0.1:8000
 ```
 
+## Team Commands
+
+- `@break`: pause all agent work for the active run.
+- `@attention`: pause work and call a team meeting (await instructions).
+- `@resume`: resume work (any stakeholder message also resumes).
+
 ## Manual Setup (no scripts)
 
 ### 1) Create and activate a venv

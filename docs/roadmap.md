@@ -20,3 +20,8 @@
 - Multi-job coordination with SLA timers.
 - Approval UI endpoints with diff/context.
 - Cross-agent coordination and reporting.
+
+## Team Commands
+- `@break`: pauses all agent work for the active run.
+- `@attention`: pauses work and calls a team meeting.
+- `@resume`: resumes work (any stakeholder message also resumes).
