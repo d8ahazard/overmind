@@ -11,6 +11,7 @@ from app.integrations.mcp_client import MCPRegistry
 from app.providers.model_registry import ModelRegistry
 from app.providers.model_filters import filter_chat_models, is_chat_model, pick_best_chat_model
 from app.providers.base import ProviderError
+from app.core.events import Event
 from app.db.models import AgentConfig, ProjectBudget, Run
 from app.db.session import get_session
 
@@ -26,6 +27,8 @@ class AgentRuntime:
         self.mcp_registry = mcp_registry
         self.memory = MemoryStore()
         self.secrets_broker = secrets_broker
+        self.event_bus = None
+        self.event_writer = None
 
     async def run_agent(self, run_id: int, agent: AgentConfig, goal: str) -> Dict[str, Any]:
         budget_allowed = self._check_budget(run_id)
@@ -70,20 +73,24 @@ class AgentRuntime:
             token = self.secrets_broker.issue_provider_token(agent.provider)
             if token:
                 payload["provider_token"] = token.token
+        await self._emit_thinking(run_id, agent, "start")
         try:
             response = await self.registry.invoke(agent.provider, model_to_use, payload)
         except ProviderError as exc:
+            await self._emit_thinking(run_id, agent, "done", error=str(exc))
             return {
                 "role": agent.role,
                 "content": f"Provider error: {exc}",
                 "timestamp": datetime.utcnow().isoformat(),
             }
         except Exception as exc:
+            await self._emit_thinking(run_id, agent, "done", error=str(exc))
             return {
                 "role": agent.role,
                 "content": f"Provider error: {exc}",
                 "timestamp": datetime.utcnow().isoformat(),
             }
+        await self._emit_thinking(run_id, agent, "done")
 
         self._increment_budget(run_id)
 
@@ -92,6 +99,31 @@ class AgentRuntime:
             "content": response.get("content", ""),
             "timestamp": datetime.utcnow().isoformat(),
         }
+
+    async def _emit_thinking(
+        self,
+        run_id: int,
+        agent: AgentConfig,
+        status: str,
+        error: str | None = None,
+    ) -> None:
+        payload = {
+            "agent": agent.display_name or agent.role,
+            "role": agent.role,
+            "status": status,
+            "error": error,
+        }
+        event_type = "agent.thinking" if status == "start" else "agent.thinking.done"
+        if self.event_writer and run_id:
+            try:
+                self.event_writer(run_id, {"type": event_type, "payload": payload})
+            except Exception:
+                pass
+        if self.event_bus:
+            try:
+                await self.event_bus.publish(Event(type=event_type, payload=payload))
+            except Exception:
+                pass
 
     def _check_budget(self, run_id: int) -> bool:
         with get_session() as session:

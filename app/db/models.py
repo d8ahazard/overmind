@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Optional
 
 from sqlmodel import Field, SQLModel
+from pydantic import ConfigDict
 
 
 class Project(SQLModel, table=True):
@@ -21,6 +22,7 @@ class Project(SQLModel, table=True):
 
 
 class ProjectSetting(SQLModel, table=True):
+    model_config = ConfigDict(protected_namespaces=())
     id: Optional[int] = Field(default=None, primary_key=True)
     project_id: int = Field(foreign_key="project.id")
     allow_all_tools: bool = False

@@ -19,10 +19,12 @@ from app.core.secrets import SecretsBroker
 from app.core.tool_broker import ToolBroker
 from app.core.verification import NoopVerifier
 from app.core.project_registry import ProjectRegistry, project_data_dir, project_db_url
-from app.db.models import Project
+from app.db.models import AgentConfig, Project, Team
 from app.db.session import get_session, init_db
+from sqlmodel import select
 from app.core.orchestrator import Orchestrator
 from app.core.manager_loop import ManagerLoop
+from app.core.worker_loop import WorkerLoop
 from app.core.artifacts import ArtifactStore
 from app.agents.runtime import AgentRuntime
 from app.providers.model_registry import ModelRegistry
@@ -53,6 +55,7 @@ def create_app() -> FastAPI:
                     )
                 )
                 session.commit()
+            _ensure_manager_identity(session, 0)
     else:
         active = registry.get_active()
         if active is None:
@@ -62,6 +65,8 @@ def create_app() -> FastAPI:
         data_dir = project_data_dir(active_root)
         data_dir.mkdir(parents=True, exist_ok=True)
         init_db(project_db_url(active_root))
+        with get_session() as session:
+            _ensure_manager_identity(session, active.id)
 
     app = FastAPI(title="Overmind Orchestrator")
     app.state.settings = settings
@@ -96,7 +101,18 @@ def create_app() -> FastAPI:
         app.state.job_engine,
         app.state.verifier,
     )
+    app.state.orchestrator.agent_runtime.event_bus = app.state.event_bus
+    app.state.orchestrator.agent_runtime.event_writer = (
+        lambda run_id, event: ArtifactStore(app.state.data_dir).write_event(run_id, event)
+    )
     app.state.manager_loop = ManagerLoop(
+        app.state.event_bus,
+        lambda: app.state.active_project_id,
+        app.state.orchestrator.agent_runtime,
+        app.state.tool_broker,
+        ArtifactStore(app.state.data_dir),
+    )
+    app.state.worker_loop = WorkerLoop(
         app.state.event_bus,
         lambda: app.state.active_project_id,
         app.state.orchestrator.agent_runtime,
@@ -150,8 +166,36 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     async def _start_manager_loop() -> None:
         app.state.manager_loop.start()
+        app.state.worker_loop.start()
 
     return app
+
+
+def _ensure_manager_identity(session, project_id: int) -> None:
+    teams = list(session.exec(select(Team).where(Team.project_id == project_id)))
+    for team in teams:
+        agents = list(session.exec(select(AgentConfig).where(AgentConfig.team_id == team.id)))
+        if not agents:
+            continue
+        manager = None
+        for agent in agents:
+            if (agent.display_name or "").lower() == "ava":
+                manager = agent
+                break
+        if not manager:
+            for role in ("Product Owner", "Delivery Manager", "Release Manager"):
+                for agent in agents:
+                    if agent.role == role:
+                        manager = agent
+                        break
+                if manager:
+                    break
+        if manager:
+            manager.display_name = "Ava"
+            manager.gender = "female"
+            manager.pronouns = "she/her"
+            session.add(manager)
+    session.commit()
 
 
 app = create_app()

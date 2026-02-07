@@ -25,6 +25,7 @@ export default function Chat() {
   const [attachment, setAttachment] = useState(null as File | null);
   const [error, setError] = useState(null as string | null);
   const [activity, setActivity] = useState([] as string[]);
+  const [thinkingAgents, setThinkingAgents] = useState([] as string[]);
   const fileInputRef = useRef(null as HTMLInputElement | null);
   const seenMessageIdsRef = useRef(new Set<string>());
 
@@ -65,6 +66,20 @@ export default function Chat() {
           const reason = payload?.payload?.reason ?? "thinking";
           const line = `[${actor}] ${reason}`;
           setActivity((prev: string[]) => [...prev.slice(-9), line]);
+        }
+        if (payload?.type === "agent.thinking") {
+          const actor = String(payload?.payload?.agent ?? "");
+          if (actor) {
+            setThinkingAgents((prev: string[]) =>
+              prev.includes(actor) ? prev : [...prev, actor]
+            );
+          }
+        }
+        if (payload?.type === "agent.thinking.done") {
+          const actor = String(payload?.payload?.agent ?? "");
+          if (actor) {
+            setThinkingAgents((prev: string[]) => prev.filter((name) => name !== actor));
+          }
         }
         if (payload?.type === "tool.completed") {
           console.log("tool.completed", payload.payload);
@@ -143,10 +158,27 @@ export default function Chat() {
         .map((event: EventMessage) => ({
           agent: String(event.payload.agent ?? "agent"),
           role: String(event.payload.role ?? "role"),
-          content: String(event.payload.content ?? "")
+          content: String(event.payload.content ?? ""),
+          timestamp: event.payload.timestamp ?? event.timestamp
         })),
     [events]
   );
+
+  const formatTime = (value?: string) => {
+    if (!value) {
+      return "";
+    }
+    const normalized = /[zZ]|[+-]\d{2}:?\d{2}$/.test(value) ? value : `${value}Z`;
+    const date = new Date(normalized);
+    if (Number.isNaN(date.getTime())) {
+      return "";
+    }
+    return new Intl.DateTimeFormat(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+      timeZoneName: "short"
+    }).format(date);
+  };
 
   const sendMessage = async () => {
     setError(null);
@@ -226,7 +258,10 @@ export default function Chat() {
         <div style={{ maxHeight: 420, overflowY: "auto", paddingBottom: 8 }}>
           {chatMessages.length === 0 && <div className="muted">No messages yet.</div>}
           {chatMessages.map(
-            (msg: { agent: string; role: string; content: string }, index: number) => (
+            (
+              msg: { agent: string; role: string; content: string; timestamp?: string },
+              index: number
+            ) => (
               <div
                 key={index}
                 style={{
@@ -247,7 +282,12 @@ export default function Chat() {
                     color: msg.role === "Stakeholder" ? "#0b0f19" : "var(--text)"
                   }}
                 >
-                  <div style={{ fontSize: 12, opacity: 0.7 }}>{msg.agent}</div>
+                  <div style={{ fontSize: 12, opacity: 0.7 }}>
+                    {msg.agent}
+                    {msg.timestamp && (
+                      <span style={{ marginLeft: 8 }}>{formatTime(msg.timestamp)}</span>
+                    )}
+                  </div>
                   <div>{msg.content}</div>
                 </div>
               </div>
@@ -259,6 +299,9 @@ export default function Chat() {
                 ? `Awaiting: ${pendingAgents.join(", ")}…`
                 : "Agent is typing…"}
             </div>
+          )}
+          {thinkingAgents.length > 0 && (
+            <div className="muted">Thinking: {thinkingAgents.join(", ")}</div>
           )}
           {activity.length > 0 && (
             <div className="muted" style={{ marginTop: 8 }}>

@@ -1,6 +1,7 @@
 from datetime import datetime
 import json
 import uuid
+import re
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from sqlmodel import select
@@ -114,6 +115,7 @@ async def send_message(payload: dict, request: Request) -> dict:
     )
 
     has_mention = "@" in message
+    team_broadcast = bool(re.search(r"@(?:all|team|everyone)\\b", (message or "").lower()))
     manager = None
     manager_briefed = False
     if not has_mention:
@@ -166,6 +168,17 @@ async def send_message(payload: dict, request: Request) -> dict:
                 await event_bus.publish(Event(type="chat.message", payload=manager_message))
                 memory.append(run.id, manager.id, manager.role, f"Manager: {directive}")
                 manager_briefed = True
+                await _trigger_agent_followups(
+                    run,
+                    manager,
+                    directive,
+                    router_helper,
+                    agent_runtime,
+                    tool_broker,
+                    artifacts,
+                    event_bus,
+                    memory,
+                )
 
             created_tasks = 0
             with get_session() as session:
@@ -231,9 +244,10 @@ async def send_message(payload: dict, request: Request) -> dict:
         "If a tool is required, respond with ONLY a JSON object:\n"
         '{\"tool\":\"system.run\",\"arguments\":{\"command\":\"whoami\"}}'
     )
-    for agent in targets:
+
+    async def _run_agent_response(agent: AgentConfig, prompt: str, allow_no_response: bool) -> str | None:
         if not agent.id:
-            continue
+            return None
         memory.append(run.id, agent.id, agent.role, f"Stakeholder: {message}")
         await event_bus.publish(
             Event(
@@ -245,14 +259,6 @@ async def send_message(payload: dict, request: Request) -> dict:
                 },
             )
         )
-        if has_mention:
-            prompt = (
-                f"{message}\n\n"
-                "When responding, address teammates with @mentions as needed. "
-                "Use role tags like @po, @dm, @tl, @dev, @qa, @rm when appropriate."
-            )
-        else:
-            prompt = response_prompt
         response = await agent_runtime.run_agent(run.id, agent, prompt)
         response_text = (response.get("content") or "").strip()
         tool_call = _extract_tool_call(response_text)
@@ -261,8 +267,8 @@ async def send_message(payload: dict, request: Request) -> dict:
                 tool_call, request, tool_broker, agent, run.id
             )
             response_text = tool_result
-        if not has_mention and response_text.upper() == "NO_RESPONSE":
-            continue
+        if allow_no_response and response_text.upper() == "NO_RESPONSE":
+            return None
         agent_message = {
             "message_id": str(uuid.uuid4()),
             "agent": agent.display_name or agent.role,
@@ -281,12 +287,130 @@ async def send_message(payload: dict, request: Request) -> dict:
         await event_bus.publish(agent_event)
         await event_bus.publish(chat_event)
         memory.append(run.id, agent.id, agent.role, f"Agent: {response_text}")
+        return response_text
+
+    team_updates: list[str] = []
+    for agent in targets:
+        if has_mention:
+            prompt = (
+                f"{message}\n\n"
+                "You must respond with a status update and next action. "
+                "When responding, address teammates with @mentions as needed. "
+                "Use role tags like @po, @dm, @tl, @dev, @qa, @rm when appropriate. "
+                "If you are blocked or done, ask @po or @dm what to do next."
+            )
+            allow_no_response = False
+        else:
+            prompt = response_prompt
+            allow_no_response = True
+        response_text = await _run_agent_response(agent, prompt, allow_no_response)
+        if response_text:
+            team_updates.append(f"{agent.role}: {response_text}")
+
+    if team_broadcast and manager and manager.id:
+        for _ in range(2):
+            await event_bus.publish(
+                Event(
+                    type="agent.thinking",
+                    payload={
+                        "agent": manager.display_name or manager.role,
+                        "role": manager.role,
+                        "reason": "manager_followup",
+                    },
+                )
+            )
+            followup_prompt = (
+                "Review team updates and decide next steps.\n"
+                "If no further action is needed, respond with ONLY: NO_FURTHER_ACTION.\n"
+                "Otherwise, respond with a short directive that includes @mentions.\n\n"
+                "Team updates:\n" + "\n".join(team_updates)
+            )
+            manager_response = await agent_runtime.run_agent(run.id, manager, followup_prompt)
+            manager_text = (manager_response.get("content") or "").strip()
+            if manager_text.upper().startswith("NO_FURTHER_ACTION"):
+                break
+            manager_message = {
+                "message_id": str(uuid.uuid4()),
+                "agent": manager.display_name or manager.role,
+                "role": manager.role,
+                "content": manager_text,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+            artifacts.write_chat(run.id, manager.role, manager_message)
+            await event_bus.publish(Event(type="chat.message", payload=manager_message))
+            memory.append(run.id, manager.id, manager.role, f"Manager: {manager_text}")
+            await _trigger_agent_followups(
+                run,
+                manager,
+                manager_text,
+                router_helper,
+                agent_runtime,
+                tool_broker,
+                artifacts,
+                event_bus,
+                memory,
+            )
+
+            for agent in targets:
+                if not agent.id or agent.id == manager.id:
+                    continue
+                agent_prompt = (
+                    f"Manager directive:\n{manager_text}\n\n"
+                    "Respond with your next actions. "
+                    "If you are blocked or done, ask @po or @dm what to do next."
+                )
+                response_text = await _run_agent_response(agent, agent_prompt, False)
+                if response_text:
+                    team_updates.append(f"{agent.role}: {response_text}")
 
     return {
         "status": "ok",
         "run_id": run.id,
         "targets": [t.display_name or t.role for t in targets],
     }
+
+
+async def _trigger_agent_followups(
+    run: Run,
+    manager: AgentConfig,
+    message: str,
+    router: ChatRouter,
+    agent_runtime,
+    tool_broker,
+    artifacts,
+    event_bus,
+    memory_store,
+) -> None:
+    targets = router.resolve_targets(run.team_id, message, "team")
+    targets = [agent for agent in targets if agent.id and agent.id != manager.id]
+    if not targets:
+        return
+    for agent in targets:
+        prompt = (
+            f"Manager directive:\n{message}\n\n"
+            "Respond with your next actions. "
+            "If you are blocked or done, ask @po or @dm what to do next."
+        )
+        response = await agent_runtime.run_agent(run.id, agent, prompt)
+        response_text = (response.get("content") or "").strip()
+        agent_message = {
+            "message_id": str(uuid.uuid4()),
+            "agent": agent.display_name or agent.role,
+            "role": agent.role,
+            "content": response_text,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+        artifacts.write_chat(run.id, agent.role, agent_message)
+        agent_event = Event(
+            type="agent.response",
+            payload={"agent": agent.role, "content": response_text},
+        )
+        chat_event = Event(type="chat.message", payload=agent_message)
+        artifacts.write_event(run.id, agent_event.__dict__)
+        artifacts.write_event(run.id, chat_event.__dict__)
+        await event_bus.publish(agent_event)
+        await event_bus.publish(chat_event)
+        memory_store.append(run.id, agent.id, agent.role, f"Agent: {response_text}")
 
 
 def _pick_best_agent(team_id: int, message: str) -> AgentConfig | None:
@@ -317,10 +441,16 @@ def _pick_best_agent(team_id: int, message: str) -> AgentConfig | None:
 
 
 def _pick_manager(agents: list[AgentConfig]) -> AgentConfig | None:
+    if not agents:
+        return None
     for agent in agents:
-        if agent.role in MANAGER_ROLES:
+        if (agent.display_name or "").lower() == "ava":
             return agent
-    return agents[0] if agents else None
+    for role in ("Product Owner", "Delivery Manager", "Release Manager"):
+        for agent in agents:
+            if agent.role == role:
+                return agent
+    return agents[0]
 
 
 def _extract_json_payload(text: str) -> dict | None:

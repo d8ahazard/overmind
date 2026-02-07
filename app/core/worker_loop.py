@@ -1,19 +1,18 @@
 import asyncio
 import json
-import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlmodel import select
 
 from app.core.events import Event, EventBus
-from app.core.chat_router import ChatRouter, MANAGER_ROLES
 from app.core.tool_broker import ToolRequest
-from app.db.models import AgentConfig, ProjectSetting, Run, Task, Team
+from app.db.models import AgentConfig, Run, Task, Team
 from app.db.session import get_session
+from app.core.chat_router import MANAGER_ROLES
 
 
-class ManagerLoop:
+class WorkerLoop:
     def __init__(
         self,
         event_bus: EventBus,
@@ -27,8 +26,10 @@ class ManagerLoop:
         self.agent_runtime = agent_runtime
         self.tool_broker = tool_broker
         self.artifact_store = artifact_store
-        self.chat_router = ChatRouter()
         self._running = False
+        self._idle_prompted: dict[int, datetime] = {}
+        self._manager_prompted: dict[int, datetime] = {}
+        self._chat_seen: dict[int, list[str]] = {}
 
     def start(self) -> None:
         if self._running:
@@ -52,16 +53,23 @@ class ManagerLoop:
             tasks = list(
                 session.exec(
                     select(Task)
-                    .where(
-                        Task.status == "pending",
-                        (Task.assigned_role == None)  # noqa: E711
-                        | (Task.assigned_role.in_(list(MANAGER_ROLES))),
-                    )
+                    .where(Task.status == "pending")
                     .order_by(Task.created_at.asc())
                 )
             )
-        for task in tasks[:3]:
+            run = session.exec(
+                select(Run).where(Run.project_id == project_id).order_by(Run.id.desc())
+            ).first()
+            agents = (
+                list(session.exec(select(AgentConfig).where(AgentConfig.team_id == run.team_id)))
+                if run
+                else []
+            )
+        for task in tasks[:5]:
             await self._handle_task(task.id)
+        if run:
+            await self._prompt_idle(run, agents)
+            await self._process_chat(run, agents)
 
     async def _handle_task(self, task_id: int) -> None:
         with get_session() as session:
@@ -71,26 +79,8 @@ class ManagerLoop:
             run = session.get(Run, task.run_id)
             if not run:
                 return
-            retry_limit = 3
-            setting = session.exec(
-                select(ProjectSetting).where(ProjectSetting.project_id == run.project_id)
-            ).first()
-            if setting and setting.task_retry_limit:
-                retry_limit = max(1, int(setting.task_retry_limit))
-            if task.attempts >= retry_limit:
-                task.status = "failed"
-                task.updated_at = datetime.utcnow()
-                session.add(task)
-                session.commit()
-                await self._emit(
-                    task.run_id,
-                    "task.failed",
-                    {"task_id": task.id, "reason": f"max_attempts:{retry_limit}"},
-                )
-                return
             team = session.get(Team, run.team_id)
             agents = list(session.exec(select(AgentConfig).where(AgentConfig.team_id == team.id)))
-            manager = _pick_manager(agents)
             assigned = _pick_agent(agents, task)
             if not assigned:
                 return
@@ -110,7 +100,8 @@ class ManagerLoop:
         prompt = (
             f"Task: {task.title}\n"
             f"Details: {task.description or ''}\n"
-            "Coordinate with teammates using @mentions when needed.\n"
+            "Work autonomously and report progress. "
+            "If blocked or done, ask @po or @dm for next steps.\n"
             "If a tool is required, respond with ONLY JSON:\n"
             '{\"tool\":\"system.run\",\"arguments\":{\"command\":\"whoami\"}}'
         )
@@ -121,6 +112,7 @@ class ManagerLoop:
             response_text = await self._execute_tool_call(
                 tool_call, assigned, run.id
             )
+
         worker_message = {
             "agent": assigned.display_name or assigned.role,
             "role": assigned.role,
@@ -130,48 +122,9 @@ class ManagerLoop:
         self.artifact_store.write_chat(run.id, assigned.role, worker_message)
         await self._emit(run.id, "chat.message", worker_message)
 
-        review_text = response_text
-        if manager:
-            review_prompt = (
-                f"Task: {task.title}\n"
-                f"Assigned role: {assigned.role}\n"
-                f"Worker output: {response_text}\n\n"
-                "If acceptable, respond with ONLY: APPROVED.\n"
-                "If rework is needed, respond with ONLY: RETRY and a brief reason.\n"
-                "If delegating follow-up, mention teammates with @mentions."
-            )
-            review = await self.agent_runtime.run_agent(run.id, manager, review_prompt)
-            review_text = (review.get("content") or "").strip()
-            review_message = {
-                "agent": manager.display_name or manager.role,
-                "role": manager.role,
-                "content": review_text,
-                "timestamp": datetime.utcnow().isoformat(),
-            }
-            self.artifact_store.write_chat(run.id, manager.role, review_message)
-            await self._emit(run.id, "chat.message", review_message)
-            await self._emit(
-                run.id,
-                "task.reviewed",
-                {"task_id": task.id, "reviewer": manager.role, "review": review_text},
-            )
-            if _has_mentions(review_text):
-                await self._trigger_followups(run, manager, review_text)
-
         with get_session() as session:
             task = session.get(Task, task_id)
             if not task:
-                return
-            if manager and review_text.startswith("RETRY"):
-                task.status = "pending"
-                task.updated_at = datetime.utcnow()
-                session.add(task)
-                session.commit()
-                await self._emit(
-                    run.id,
-                    "task.requeued",
-                    {"task_id": task.id, "reason": review_text},
-                )
                 return
             task.status = "completed"
             task.completed_at = datetime.utcnow()
@@ -186,9 +139,123 @@ class ManagerLoop:
                 "task_id": task.id,
                 "summary": response_text,
                 "assigned_role": assigned.role,
-                "review": review_text if manager else None,
+                "review": None,
             },
         )
+
+    async def _prompt_idle(self, run: Run, agents: list[AgentConfig]) -> None:
+        now = datetime.utcnow()
+        cooldown = timedelta(minutes=3)
+        idle_agents: list[str] = []
+        for agent in agents:
+            if agent.role in MANAGER_ROLES or not agent.id:
+                continue
+            last = self._idle_prompted.get(agent.id)
+            if last and now - last < cooldown:
+                continue
+            message = {
+                "message_id": f"idle-{agent.id}-{int(now.timestamp())}",
+                "agent": agent.display_name or agent.role,
+                "role": agent.role,
+                "content": "I'm idle. @Ava, what should I tackle next?",
+                "timestamp": now.isoformat(),
+            }
+            self.artifact_store.write_chat(run.id, agent.role, message)
+            await self._emit(run.id, "chat.message", message)
+            self._idle_prompted[agent.id] = now
+            idle_agents.append(agent.display_name or agent.role)
+
+        if idle_agents:
+            manager = _pick_manager(agents)
+            if manager:
+                last_manager = self._manager_prompted.get(run.id)
+                if not last_manager or now - last_manager >= cooldown:
+                    assigned_role = (
+                        manager.role if manager.role in MANAGER_ROLES else None
+                    )
+                    await self._create_manager_task(run, manager, idle_agents, assigned_role)
+                    self._manager_prompted[run.id] = now
+
+    async def _create_manager_task(
+        self,
+        run: Run,
+        manager: AgentConfig,
+        idle_agents: list[str],
+        assigned_role: str | None,
+    ) -> None:
+        title = "Assign work to idle team members"
+        description = (
+            "Team members are idle and asking for work: "
+            + ", ".join(idle_agents)
+            + ". Provide next steps and assignments."
+        )
+        with get_session() as session:
+            task = Task(
+                run_id=run.id,
+                title=title,
+                description=description,
+                assigned_role=assigned_role,
+            )
+            session.add(task)
+            session.commit()
+            session.refresh(task)
+            await self._emit(
+                run.id,
+                "task.created",
+                {"task_id": task.id, "title": task.title, "assigned_role": task.assigned_role},
+            )
+
+    async def _process_chat(self, run: Run, agents: list[AgentConfig]) -> None:
+        messages = self.artifact_store.read_chats(run.id)
+        if not messages:
+            return
+        for agent in agents:
+            if not agent.id:
+                continue
+            seen = self._chat_seen.get(agent.id, [])
+            processed = 0
+            for msg in messages:
+                message_id = msg.get("message_id") or f"{msg.get('agent')}:{msg.get('timestamp')}:{msg.get('content')}"
+                if message_id in seen:
+                    continue
+                seen.append(message_id)
+                if len(seen) > 200:
+                    seen = seen[-200:]
+                sender = str(msg.get("agent") or "")
+                if sender.lower() in {
+                    (agent.display_name or "").lower(),
+                    agent.role.lower(),
+                }:
+                    continue
+                prompt = (
+                    "Incoming team message:\n"
+                    f"From: {sender}\n"
+                    f"Content: {msg.get('content')}\n\n"
+                    "Decide if you should respond. If yes, respond with a concise update or action. "
+                    "If not needed, respond with ONLY: NO_RESPONSE.\n"
+                    "If you are blocked or done, ask @po or @dm what to do next. "
+                    "Use role tags like @po, @dm, @tl, @dev, @qa, @rm when appropriate."
+                )
+                response = await self.agent_runtime.run_agent(run.id, agent, prompt)
+                response_text = (response.get("content") or "").strip()
+                if response_text.upper() == "NO_RESPONSE":
+                    processed += 1
+                    if processed >= 2:
+                        break
+                    continue
+                agent_message = {
+                    "message_id": f"auto-{agent.id}-{int(datetime.utcnow().timestamp())}",
+                    "agent": agent.display_name or agent.role,
+                    "role": agent.role,
+                    "content": response_text,
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+                self.artifact_store.write_chat(run.id, agent.role, agent_message)
+                await self._emit(run.id, "chat.message", agent_message)
+                processed += 1
+                if processed >= 2:
+                    break
+            self._chat_seen[agent.id] = seen
 
     async def _execute_tool_call(self, tool_call: dict, agent: AgentConfig, run_id: int) -> str:
         tool_name = tool_call.get("tool")
@@ -214,34 +281,6 @@ class ManagerLoop:
         self.artifact_store.write_event(run_id, event.__dict__)
         await self.event_bus.publish(event)
 
-    async def _trigger_followups(
-        self, run: Run, manager: AgentConfig, message: str
-    ) -> None:
-        targets = self.chat_router.resolve_targets(run.team_id, message, "team")
-        targets = [agent for agent in targets if agent.id and agent.id != manager.id]
-        if not targets:
-            return
-        for agent in targets:
-            prompt = (
-                f"Manager directive:\n{message}\n\n"
-                "Respond with your next actions. "
-                "If you are blocked or done, ask @po or @dm what to do next."
-            )
-            response = await self.agent_runtime.run_agent(run.id, agent, prompt)
-            response_text = (response.get("content") or "").strip()
-            agent_message = {
-                "agent": agent.display_name or agent.role,
-                "role": agent.role,
-                "content": response_text,
-                "timestamp": datetime.utcnow().isoformat(),
-            }
-            self.artifact_store.write_chat(run.id, agent.role, agent_message)
-            await self._emit(run.id, "chat.message", agent_message)
-
-
-def _has_mentions(text: str) -> bool:
-    return bool(re.search(r"@([\\w\\-]+)", text or ""))
-
 
 def _extract_tool_call(text: str) -> dict | None:
     if not text:
@@ -263,27 +302,9 @@ def _pick_agent(agents: list[AgentConfig], task: Task) -> Optional[AgentConfig]:
         for agent in agents:
             if agent.role == task.assigned_role:
                 return agent
-    keywords = {
-        "qa": ["test", "bug", "regression", "qa", "verify"],
-        "devops": ["deploy", "ci", "pipeline", "infra", "release"],
-        "docs": ["docs", "documentation", "readme", "guide"],
-        "dev": ["code", "implement", "fix", "refactor", "build"],
-        "pm": ["scope", "plan", "requirements", "roadmap"],
-    }
-    text = f"{task.title} {task.description or ''}".lower()
-    scored: list[tuple[int, AgentConfig]] = []
     for agent in agents:
-        role = agent.role.lower()
-        score = 0
-        for key, words in keywords.items():
-            if key in role:
-                score += sum(1 for w in words if w in text) * 2
-            else:
-                score += sum(1 for w in words if w in text)
-        scored.append((score, agent))
-    scored.sort(key=lambda item: item[0], reverse=True)
-    if scored and scored[0][0] > 0:
-        return scored[0][1]
+        if agent.role not in MANAGER_ROLES:
+            return agent
     return agents[0]
 
 

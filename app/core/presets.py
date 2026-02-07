@@ -165,7 +165,10 @@ def build_agents(
     agents: List[AgentConfig] = []
     for role in roles:
         assigned_counts[role] = assigned_counts.get(role, 0) + 1
-        identity = _pick_identity(role, used_names)
+        if role == "Product Owner":
+            identity = {"name": "Ava", "gender": "female", "pronouns": "she/her"}
+        else:
+            identity = _pick_identity(role, used_names)
         used_names.add(identity["name"])
         avatar_url = generate_avatar_url(identity["name"])
         picked_provider, picked_model = (
