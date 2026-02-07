@@ -9,6 +9,14 @@ from app.db.session import get_session
 
 MANAGER_ROLES = {"Product Owner", "Delivery Manager", "Release Manager"}
 TEAM_MENTIONS = {"team", "all", "everyone"}
+ROLE_ALIASES = {
+    "product owner": {"po", "productowner"},
+    "delivery manager": {"dm", "deliverymanager"},
+    "tech lead": {"tl", "techlead", "lead"},
+    "developer": {"dev", "engineer"},
+    "qa engineer": {"qa", "tester", "test"},
+    "release manager": {"rm", "release"},
+}
 
 
 class ChatRouter:
@@ -27,7 +35,12 @@ class ChatRouter:
             for agent in agents:
                 display = (agent.display_name or "").lower()
                 role = agent.role.lower()
-                if mention == display or mention == role.replace(" ", ""):
+                aliases = ROLE_ALIASES.get(role, set())
+                if (
+                    mention == display
+                    or mention == role.replace(" ", "")
+                    or mention in aliases
+                ):
                     return [agent]
         if policy == "team":
             return agents

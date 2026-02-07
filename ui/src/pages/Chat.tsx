@@ -24,6 +24,7 @@ export default function Chat() {
   const [pendingAgents, setPendingAgents] = useState([] as string[]);
   const [attachment, setAttachment] = useState(null as File | null);
   const [error, setError] = useState(null as string | null);
+  const [activity, setActivity] = useState([] as string[]);
   const fileInputRef = useRef(null as HTMLInputElement | null);
   const seenMessageIdsRef = useRef(new Set<string>());
 
@@ -45,8 +46,28 @@ export default function Chat() {
         if (payload?.type === "chat.message") {
           const agent = String(payload?.payload?.agent ?? "");
           if (agent && agent !== "Stakeholder") {
-            setPendingAgents((prev) => prev.filter((name) => name !== agent));
+            setPendingAgents((prev: string[]) => prev.filter((name: string) => name !== agent));
           }
+        }
+        if (payload?.type === "tool.requested") {
+          const tool = payload?.payload?.tool ?? "tool";
+          const actor = payload?.payload?.actor ?? "agent";
+          const args = payload?.payload?.arguments ?? {};
+          const command = args.command ? ` ${args.command}` : "";
+          const name = args.name ? ` ${args.name}` : "";
+          const url = args.url ? ` ${args.url}` : "";
+          const line = `[${actor}] ${tool}${command}${name}${url}`;
+          setActivity((prev: string[]) => [...prev.slice(-9), line]);
+          console.log("tool.requested", payload.payload);
+        }
+        if (payload?.type === "agent.thinking") {
+          const actor = payload?.payload?.agent ?? "agent";
+          const reason = payload?.payload?.reason ?? "thinking";
+          const line = `[${actor}] ${reason}`;
+          setActivity((prev: string[]) => [...prev.slice(-9), line]);
+        }
+        if (payload?.type === "tool.completed") {
+          console.log("tool.completed", payload.payload);
         }
       } catch {
         // ignore
@@ -237,6 +258,11 @@ export default function Chat() {
               {pendingAgents.length
                 ? `Awaiting: ${pendingAgents.join(", ")}…`
                 : "Agent is typing…"}
+            </div>
+          )}
+          {activity.length > 0 && (
+            <div className="muted" style={{ marginTop: 8 }}>
+              Activity: {activity.join(" · ")}
             </div>
           )}
         </div>

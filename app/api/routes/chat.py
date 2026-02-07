@@ -123,6 +123,16 @@ async def send_message(payload: dict, request: Request) -> dict:
             )
         manager = _pick_manager(agents)
         if manager and manager.id:
+            await event_bus.publish(
+                Event(
+                    type="agent.thinking",
+                    payload={
+                        "agent": manager.display_name or manager.role,
+                        "role": manager.role,
+                        "reason": "manager_planning",
+                    },
+                )
+            )
             manager_prompt = (
                 "You are the team manager. Provide a short directive that mentions "
                 "relevant teammates with @mentions and outlines next steps.\n"
@@ -216,6 +226,7 @@ async def send_message(payload: dict, request: Request) -> dict:
         f"{message}\n\n"
         "If a response is required, reply with a concise response. "
         "Address teammates with @mentions when coordinating work. "
+        "Use role tags like @po, @dm, @tl, @dev, @qa, @rm when appropriate. "
         "If no response is needed, return exactly: NO_RESPONSE.\n"
         "If a tool is required, respond with ONLY a JSON object:\n"
         '{\"tool\":\"system.run\",\"arguments\":{\"command\":\"whoami\"}}'
@@ -237,7 +248,8 @@ async def send_message(payload: dict, request: Request) -> dict:
         if has_mention:
             prompt = (
                 f"{message}\n\n"
-                "When responding, address teammates with @mentions as needed."
+                "When responding, address teammates with @mentions as needed. "
+                "Use role tags like @po, @dm, @tl, @dev, @qa, @rm when appropriate."
             )
         else:
             prompt = response_prompt
