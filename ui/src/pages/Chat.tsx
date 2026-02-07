@@ -27,7 +27,12 @@ export default function Chat() {
   const [activity, setActivity] = useState([] as string[]);
   const [thinkingAgents, setThinkingAgents] = useState([] as string[]);
   const [pauseMode, setPauseMode] = useState(null as string | null);
+  const [tagOptions, setTagOptions] = useState([] as string[]);
+  const [tagMatches, setTagMatches] = useState([] as string[]);
+  const [tagOpen, setTagOpen] = useState(false);
+  const [tagIndex, setTagIndex] = useState(0);
   const fileInputRef = useRef(null as HTMLInputElement | null);
+  const inputRef = useRef(null as HTMLInputElement | null);
   const seenMessageIdsRef = useRef(new Set<string>());
 
   useEffect(() => {
@@ -99,6 +104,49 @@ export default function Chat() {
       }
     };
     return () => socket.close();
+  }, []);
+
+  useEffect(() => {
+    const loadTags = async () => {
+      try {
+        const agents = (await apiGet("/agents")) as {
+          display_name?: string | null;
+          role: string;
+        }[];
+        const baseTags = [
+          "@all",
+          "@team",
+          "@everyone",
+          "@po",
+          "@dm",
+          "@tl",
+          "@dev",
+          "@qa",
+          "@rm",
+          "@frontend",
+          "@backend",
+          "@fe",
+          "@be"
+        ];
+        const agentTags = agents
+          .flatMap((agent) => {
+            const entries: string[] = [];
+            if (agent.display_name) {
+              entries.push(`@${agent.display_name}`);
+            }
+            if (agent.role) {
+              entries.push(`@${agent.role.replace(/\s+/g, "")}`);
+            }
+            return entries;
+          })
+          .filter(Boolean);
+        const merged = Array.from(new Set([...baseTags, ...agentTags]));
+        setTagOptions(merged);
+      } catch {
+        // ignore
+      }
+    };
+    void loadTags();
   }, []);
 
   useEffect(() => {
@@ -222,6 +270,41 @@ export default function Chat() {
     } catch (err) {
       setError((err as Error).message);
     }
+  };
+
+  const updateTagMatches = (nextValue: string) => {
+    const cursorAtEnd =
+      inputRef.current?.selectionStart === nextValue.length &&
+      inputRef.current?.selectionEnd === nextValue.length;
+    if (!cursorAtEnd) {
+      setTagOpen(false);
+      return;
+    }
+    const match = nextValue.match(/(^|\s)@([A-Za-z0-9_-]*)$/);
+    if (!match) {
+      setTagOpen(false);
+      return;
+    }
+    const query = match[2].toLowerCase();
+    const matches = tagOptions.filter((tag: string) =>
+      tag.toLowerCase().startsWith(`@${query}`)
+    );
+    setTagMatches(matches.slice(0, 8));
+    setTagIndex(0);
+    setTagOpen(matches.length > 0);
+  };
+
+  const applyTag = (tag: string) => {
+    const nextValue = message.replace(/(^|\s)@([A-Za-z0-9_-]*)$/, `$1${tag} `);
+    setMessage(nextValue);
+    setTagOpen(false);
+    setTagMatches([]);
+    setTagIndex(0);
+    requestAnimationFrame(() => {
+      if (inputRef.current) {
+        inputRef.current.focus();
+      }
+    });
   };
 
   const introTeam = async () => {
@@ -371,18 +454,81 @@ export default function Chat() {
             style={{ display: "none" }}
             onChange={(e) => setAttachment(e.target.files?.[0] ?? null)}
           />
-          <input
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                void sendMessage();
-              }
-            }}
-            placeholder="Type a message. Use @Name to target an agent."
-            style={{ flex: 1 }}
-          />
+          <div style={{ position: "relative", flex: 1 }}>
+            <input
+              ref={inputRef}
+              value={message}
+              onChange={(e) => {
+                const next = e.target.value;
+                setMessage(next);
+                updateTagMatches(next);
+              }}
+              onKeyDown={(event) => {
+                if (tagOpen && tagMatches.length > 0) {
+                  if (event.key === "ArrowDown") {
+                    event.preventDefault();
+                    setTagIndex((prev: number) =>
+                      prev + 1 >= tagMatches.length ? 0 : prev + 1
+                    );
+                    return;
+                  }
+                  if (event.key === "ArrowUp") {
+                    event.preventDefault();
+                    setTagIndex((prev: number) =>
+                      prev - 1 < 0 ? tagMatches.length - 1 : prev - 1
+                    );
+                    return;
+                  }
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    applyTag(tagMatches[tagIndex]);
+                    return;
+                  }
+                  if (event.key === "Escape") {
+                    setTagOpen(false);
+                    return;
+                  }
+                }
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void sendMessage();
+                }
+              }}
+              placeholder="Type a message. Use @Name to target an agent."
+              style={{ width: "100%" }}
+            />
+            {tagOpen && tagMatches.length > 0 && (
+              <div
+                className="card"
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  right: 0,
+                  bottom: "100%",
+                  marginBottom: 6,
+                  zIndex: 10
+                }}
+              >
+                {tagMatches.map((tag: string, idx: number) => (
+                  <div
+                    key={tag}
+                    className={`row ${idx === tagIndex ? "active" : ""}`}
+                    style={{
+                      padding: "6px 8px",
+                      cursor: "pointer",
+                      background: idx === tagIndex ? "var(--card)" : "transparent"
+                    }}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      applyTag(tag);
+                    }}
+                  >
+                    {tag}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           <button onClick={uploadAttachment} className="secondary" disabled={!attachment}>
             Attach
           </button>
