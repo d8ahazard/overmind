@@ -50,6 +50,24 @@ def run_command(
     )
 
 
+def is_destructive_command(command: Sequence[str] | str) -> bool:
+    if isinstance(command, list):
+        parts = [str(item) for item in command if item]
+    else:
+        parts = str(command).strip().split()
+    if not parts:
+        return False
+    cmd = parts[0].lower()
+    destructive = {"rm", "del", "erase", "rmdir", "rd"}
+    if cmd in destructive:
+        return True
+    if cmd == "git":
+        rest = " ".join(parts[1:]).lower()
+        if "reset --hard" in rest or "clean -fdx" in rest or "clean -ffdx" in rest:
+            return True
+    return False
+
+
 def execute_shell_tool(request: ToolRequest) -> ToolResult:
     command = request.arguments.get("command")
     cwd = request.arguments.get("cwd")

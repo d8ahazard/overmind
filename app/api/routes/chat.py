@@ -11,7 +11,8 @@ from app.core.events import Event
 from app.core.memory import MemoryStore
 from app.core.artifacts import ArtifactStore
 from app.core.orchestrator import Orchestrator
-from app.core.shell import execute_shell_tool
+from app.core.shell import execute_shell_tool, is_destructive_command
+from app.core.git_tools import execute_git_tool
 from app.integrations.mcp_client import MCPClient
 from app.core.tool_broker import ToolRequest, ToolResult
 from app.core.project_registry import project_attachments_dir
@@ -503,7 +504,7 @@ async def _execute_tool_call(
 ) -> str:
     tool_name = tool_call.get("tool")
     arguments = tool_call.get("arguments") or {}
-    if tool_name not in {"system.run", "mcp.call"}:
+    if tool_name not in {"system.run", "mcp.call"} and not tool_name.startswith("git."):
         return f"Tool execution blocked: unknown tool {tool_name}."
 
     if tool_name == "system.run":
@@ -512,11 +513,25 @@ async def _execute_tool_call(
         if "cwd" not in arguments:
             arguments["cwd"] = str(request.app.state.active_project_root)
         if "allowed_roots" not in arguments:
-            arguments["allowed_roots"] = [
-                str(request.app.state.active_project_root),
-                str(request.app.state.settings.repo_root),
-            ]
+            allowed = [str(request.app.state.active_project_root)]
+            if request.app.state.settings.allow_self_edit:
+                allowed.append(str(request.app.state.settings.repo_root))
+            arguments["allowed_roots"] = allowed
         required_scopes = ["system:run"]
+        destructive = is_destructive_command(arguments.get("command"))
+        if destructive and not tool_call.get("approval_id"):
+            return "Tool execution blocked: approval_required"
+        risk_level = "critical" if destructive else "low"
+    elif tool_name.startswith("git."):
+        if tool_name not in broker.executors:
+            broker.register(
+                tool_name,
+                lambda tool_request: execute_git_tool(
+                    tool_request, request.app.state.active_project_root
+                ),
+            )
+        required_scopes = [f"git:{tool_name.split('.', 1)[1]}"]
+        risk_level = "high" if tool_name == "git.merge" else "low"
     else:
         if "mcp.call" not in broker.executors:
             async def _executor(tool_request: ToolRequest):
@@ -529,6 +544,7 @@ async def _execute_tool_call(
                 return ToolResult(success=True, output=result)
             broker.register("mcp.call", _executor)
         required_scopes = ["mcp:call"]
+        risk_level = "low"
 
     actor_scopes = [
         item.strip() for item in (agent.permissions or "").split(",") if item.strip()
@@ -538,6 +554,7 @@ async def _execute_tool_call(
         arguments=arguments,
         required_scopes=required_scopes,
         actor=agent.display_name or agent.role,
+        risk_level=risk_level,
         run_id=run_id,
     )
     result = await broker.execute_async(tool_request, actor_scopes)

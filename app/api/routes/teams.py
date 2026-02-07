@@ -16,6 +16,7 @@ from app.providers.model_filters import (
     pick_worker_chat_model,
 )
 from app.db.models import AgentConfig, ProjectSetting, ProviderKey, Team
+from app.core.role_scopes import resolve_role_scopes
 from app.db.session import get_session
 
 router = APIRouter()
@@ -107,6 +108,9 @@ async def apply_preset(team_id: int, payload: dict, request: Request) -> dict:
         team = session.get(Team, team_id)
         if not team:
             raise HTTPException(status_code=404, detail="Team not found")
+        setting = session.exec(
+            select(ProjectSetting).where(ProjectSetting.project_id == team.project_id)
+        ).first()
         enabled = [item.provider for item in session.exec(select(ProviderKey))]
         registry = ModelRegistry(request.app.state.secrets_broker)
         provider = None if provider in {"auto", ""} else provider
@@ -129,12 +133,8 @@ async def apply_preset(team_id: int, payload: dict, request: Request) -> dict:
             role_counts=role_counts,
             role_models=role_models,
         )
-        setting = session.exec(
-            select(ProjectSetting).where(ProjectSetting.project_id == team.project_id)
-        ).first()
-        default_scopes = (setting.default_tool_scopes if setting else None) or "system:run"
         for agent in agents:
-            agent.permissions = default_scopes
+            agent.permissions = resolve_role_scopes(agent.role, setting)
         if generate_profiles:
             for agent in agents:
                 display_name, personality = await _generate_profile(

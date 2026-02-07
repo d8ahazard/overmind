@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import artifacts, models, projects, runs, tasks, teams
-from app.api.routes import agents, approvals, avatars, budgets, chat, events, keys, mcp, memories, personalities, providers, repo, seed, system
+from app.api.routes import agents, approvals, avatars, budgets, chat, events, git, keys, mcp, memories, personalities, providers, repo, seed, system
 from app.api.ws import router as ws_router
 from app.config import load_settings
 from app.core.approvals import ApprovalStore
@@ -111,6 +111,7 @@ def create_app() -> FastAPI:
         app.state.orchestrator.agent_runtime,
         app.state.tool_broker,
         ArtifactStore(app.state.data_dir),
+        app.state.active_project_root,
     )
     app.state.worker_loop = WorkerLoop(
         app.state.event_bus,
@@ -118,6 +119,7 @@ def create_app() -> FastAPI:
         app.state.orchestrator.agent_runtime,
         app.state.tool_broker,
         ArtifactStore(app.state.data_dir),
+        app.state.active_project_root,
     )
 
     app.add_middleware(
@@ -147,6 +149,7 @@ def create_app() -> FastAPI:
     app.include_router(budgets.router, prefix="/budgets", tags=["budgets"])
     app.include_router(avatars.router, prefix="/avatars", tags=["avatars"])
     app.include_router(repo.router, prefix="/repo", tags=["repo"])
+    app.include_router(git.router, prefix="/git", tags=["git"])
     app.include_router(system.router, prefix="/system", tags=["system"])
     app.include_router(ws_router, prefix="/ws", tags=["ws"])
 

@@ -4,11 +4,12 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from sqlmodel import select
 
-from app.db.models import AgentConfig
+from app.db.models import AgentConfig, ProjectSetting, Team
 from app.db.session import get_session
 from app.providers.model_registry import ModelRegistry
 from app.core.chat_router import MANAGER_ROLES
 from app.core.presets import generate_avatar_url, is_broken_avatar_url, pick_avatar_url
+from app.core.role_scopes import resolve_role_scopes
 
 router = APIRouter()
 
@@ -27,6 +28,13 @@ class AgentUpdate(BaseModel):
 @router.post("/", response_model=AgentConfig)
 def create_agent(agent: AgentConfig) -> AgentConfig:
     with get_session() as session:
+        if not agent.permissions:
+            team = session.get(Team, agent.team_id)
+            if team:
+                setting = session.exec(
+                    select(ProjectSetting).where(ProjectSetting.project_id == team.project_id)
+                ).first()
+                agent.permissions = resolve_role_scopes(agent.role, setting)
         session.add(agent)
         session.commit()
         session.refresh(agent)

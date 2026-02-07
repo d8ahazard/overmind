@@ -48,3 +48,9 @@ class WorkspaceManager:
 
     def current_branch(self) -> WorkspaceResult:
         return self._run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+
+    def merge(self, branch: str) -> WorkspaceResult:
+        return self._run(["git", "merge", branch])
+
+    def push(self, remote: str, branch: str) -> WorkspaceResult:
+        return self._run(["git", "push", "-u", remote, branch])

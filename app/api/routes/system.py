@@ -4,7 +4,7 @@ import platform
 
 from fastapi import APIRouter, HTTPException, Request
 
-from app.core.shell import execute_shell_tool, system_info
+from app.core.shell import execute_shell_tool, system_info, is_destructive_command
 from app.core.tool_broker import ToolRequest
 from app.db.models import Run
 from sqlmodel import select
@@ -27,7 +27,14 @@ def run_system_command(payload: dict, request: Request) -> dict:
     command = _normalize_command(command)
     risk_level = payload.get("risk_level")
     if not risk_level:
-        risk_level = "low" if _is_read_only_command(command) else "high"
+        if is_destructive_command(command):
+            risk_level = "critical"
+        else:
+            risk_level = "low" if _is_read_only_command(command) else "high"
+    if is_destructive_command(command) and not (
+        payload.get("approved") or payload.get("approval_id")
+    ):
+        raise HTTPException(status_code=403, detail="approval_required")
 
     allowed_roots = [request.app.state.active_project_root]
     if request.app.state.settings.allow_self_edit:

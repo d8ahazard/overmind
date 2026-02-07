@@ -9,6 +9,8 @@ from sqlmodel import select
 from app.core.events import Event, EventBus
 from app.core.chat_router import ChatRouter, MANAGER_ROLES
 from app.core.tool_broker import ToolRequest
+from app.core.git_tools import execute_git_tool
+from app.core.shell import is_destructive_command
 from app.db.models import AgentConfig, ProjectSetting, Run, Task, Team
 from app.db.session import get_session
 
@@ -21,6 +23,7 @@ class ManagerLoop:
         agent_runtime,
         tool_broker,
         artifact_store,
+        repo_root,
     ) -> None:
         self.event_bus = event_bus
         self.get_active_project_id = get_active_project_id
@@ -28,6 +31,7 @@ class ManagerLoop:
         self.tool_broker = tool_broker
         self.artifact_store = artifact_store
         self.chat_router = ChatRouter()
+        self.repo_root = repo_root
         self._running = False
 
     def start(self) -> None:
@@ -193,7 +197,19 @@ class ManagerLoop:
     async def _execute_tool_call(self, tool_call: dict, agent: AgentConfig, run_id: int) -> str:
         tool_name = tool_call.get("tool")
         arguments = tool_call.get("arguments") or {}
-        required_scopes = ["system:run"] if tool_name == "system.run" else ["mcp:call"]
+        if tool_name == "system.run":
+            if is_destructive_command(arguments.get("command")):
+                return "Tool execution blocked: approval_required"
+            required_scopes = ["system:run"]
+        elif tool_name and tool_name.startswith("git."):
+            if tool_name not in self.tool_broker.executors:
+                self.tool_broker.register(
+                    tool_name,
+                    lambda tool_request: execute_git_tool(tool_request, self.repo_root),
+                )
+            required_scopes = [f"git:{tool_name.split('.', 1)[1]}"]
+        else:
+            required_scopes = ["mcp:call"]
         actor_scopes = [
             item.strip() for item in (agent.permissions or "").split(",") if item.strip()
         ]

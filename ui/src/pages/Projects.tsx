@@ -13,6 +13,8 @@ type ProjectSettings = {
   allow_all_tools: boolean;
   allow_high_risk: boolean;
   default_tool_scopes?: string | null;
+  role_tool_scopes?: string | null;
+  allow_pm_merge?: boolean | null;
   chat_target_policy?: string | null;
   task_retry_limit?: number | null;
   model_defaults?: string | null;
@@ -78,6 +80,15 @@ const ROLE_OPTIONS = [
   "Release Manager"
 ];
 
+const ROLE_SCOPE_DEFAULTS: Record<string, string> = {
+  "Product Owner": "system:run,git:status,git:diff,git:branch,git:commit,git:pr",
+  "Delivery Manager": "system:run,git:status,git:diff,git:branch,git:commit,git:pr",
+  "Tech Lead": "system:run,git:status,git:diff,git:branch,git:commit,git:pr",
+  Developer: "system:run,git:status,git:diff,git:branch,git:commit,git:pr",
+  "QA Engineer": "system:run,git:status,git:diff",
+  "Release Manager": "system:run,git:status,git:diff,git:branch,git:commit,git:pr"
+};
+
 const MEMORY_STRATEGIES = ["rolling", "latest", "none"];
 
 const parseJson = <T,>(raw: string | null | undefined, fallback: T): T => {
@@ -101,6 +112,7 @@ export default function Projects() {
   const [projectSettings, setProjectSettings] = useState(null as ProjectSettings | null);
   const [modelDefaults, setModelDefaults] = useState({} as Record<string, RoleModelDefault>);
   const [memoryProfiles, setMemoryProfiles] = useState({} as Record<string, MemoryProfile>);
+  const [roleToolScopes, setRoleToolScopes] = useState({} as Record<string, string>);
   const [modelRoleName, setModelRoleName] = useState("");
   const [memoryRoleName, setMemoryRoleName] = useState("");
 
@@ -189,6 +201,11 @@ export default function Projects() {
       {}
     );
     setMemoryProfiles(parsedProfiles);
+    const parsedRoleScopes = parseJson<Record<string, string>>(
+      projectSettings.role_tool_scopes,
+      {}
+    );
+    setRoleToolScopes(parsedRoleScopes);
     const parsedPlugins = parseJson<string[]>(projectSettings.enabled_plugins, []);
     setEnabledPlugins(parsedPlugins);
   }, [projectSettings]);
@@ -228,6 +245,17 @@ export default function Projects() {
     });
     setMemoryProfiles(next);
   }, [memoryProfiles]);
+
+  useEffect(() => {
+    if (Object.keys(roleToolScopes).length > 0) {
+      return;
+    }
+    const next: Record<string, string> = {};
+    ROLE_OPTIONS.forEach((role) => {
+      next[role] = ROLE_SCOPE_DEFAULTS[role] ?? "system:run";
+    });
+    setRoleToolScopes(next);
+  }, [roleToolScopes]);
 
   const createProject = async () => {
     setError(null);
@@ -470,6 +498,39 @@ export default function Projects() {
             onBlur={(e) => updateProjectSettings({ default_tool_scopes: e.target.value })}
             placeholder="system:run,mcp:call"
           />
+        </div>
+        <div className="row" style={{ marginTop: 8 }}>
+          <label className="pill">Allow PM merge approval</label>
+          <input
+            type="checkbox"
+            checked={projectSettings?.allow_pm_merge ?? false}
+            onChange={(e) => updateProjectSettings({ allow_pm_merge: e.target.checked })}
+          />
+        </div>
+        <div className="row" style={{ marginTop: 8 }}>
+          <label className="pill">Role tool scopes</label>
+          <button
+            className="secondary"
+            onClick={() =>
+              updateProjectSettings({ role_tool_scopes: JSON.stringify(roleToolScopes) })
+            }
+          >
+            Save role scopes
+          </button>
+        </div>
+        <div style={{ marginTop: 8 }}>
+          {ROLE_OPTIONS.map((role) => (
+            <div key={role} className="row" style={{ marginBottom: 6 }}>
+              <span className="pill">{role}</span>
+              <input
+                value={roleToolScopes[role] ?? ""}
+                onChange={(e) =>
+                  setRoleToolScopes((prev) => ({ ...prev, [role]: e.target.value }))
+                }
+                placeholder="system:run,git:status"
+              />
+            </div>
+          ))}
         </div>
         <div className="row" style={{ marginTop: 8 }}>
           <label className="pill">Chat target policy</label>
