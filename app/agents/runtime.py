@@ -44,7 +44,7 @@ class AgentRuntime:
         name = agent.display_name or agent.role
         memories = []
         if agent.id:
-            recent = self.memory.recent(run_id, agent.id, limit=5)
+            recent = self.memory.recent(run_id, agent.id, role=agent.role, limit=None)
             memories = [entry.content for entry in reversed(recent)]
         memory_note = "\nRecent memory:\n" + "\n".join(memories) if memories else ""
         prompt = (
@@ -73,6 +73,12 @@ class AgentRuntime:
         try:
             response = await self.registry.invoke(agent.provider, model_to_use, payload)
         except ProviderError as exc:
+            return {
+                "role": agent.role,
+                "content": f"Provider error: {exc}",
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+        except Exception as exc:
             return {
                 "role": agent.role,
                 "content": f"Provider error: {exc}",

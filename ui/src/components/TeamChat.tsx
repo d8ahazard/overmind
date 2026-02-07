@@ -6,6 +6,20 @@ type ChatMessage = {
 };
 
 export default function TeamChat({ messages }: { messages: ChatMessage[] }) {
+  const renderWithMentions = (content: string) => {
+    const parts = content.split(/(@[\\w-]+)/g);
+    return parts.map((part, index) => {
+      if (part.startsWith("@")) {
+        return (
+          <span key={`${part}-${index}`} style={{ color: "#7aa2ff", fontWeight: 600 }}>
+            {part}
+          </span>
+        );
+      }
+      return <span key={`${part}-${index}`}>{part}</span>;
+    });
+  };
+
   return (
     <section>
       <h3>Team Chat</h3>
@@ -15,7 +29,7 @@ export default function TeamChat({ messages }: { messages: ChatMessage[] }) {
           <div key={index} style={{ marginBottom: 8 }}>
             <strong>{message.agent}</strong>{" "}
             <span style={{ color: "#888", fontSize: 12 }}>({message.role})</span>
-            <div>{message.content}</div>
+            <div>{renderWithMentions(message.content)}</div>
           </div>
         ))}
       </div>

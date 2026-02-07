@@ -19,6 +19,7 @@ def main() -> None:
 
     if args.allow_self_project:
         os.environ["AI_DEVTEAM_ALLOW_SELF_PROJECT"] = "true"
+        os.environ["AI_DEVTEAM_SELF_ACTIVE"] = "true"
 
     uvicorn.run("app.main:app", host=args.host, port=args.port, reload=args.reload)
 

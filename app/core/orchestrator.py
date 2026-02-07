@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 from typing import List, Optional
 
 from sqlmodel import select
@@ -11,7 +12,7 @@ from app.core.events import Event, EventBus
 from app.core.job_engine import JobEngine, JobStepResult
 from app.core.memory import MemoryStore
 from app.core.verification import Verifier
-from app.db.models import AgentConfig, Job, Project, Run, Task
+from app.db.models import AgentConfig, Job, Project, ProjectSetting, Run, Task
 from app.db.session import get_session
 from app.repo.file_watcher import FileWatcher
 
@@ -70,10 +71,11 @@ class Orchestrator:
         )
         watcher.start()
         try:
-            steps = ["scoping", "planning", "executing", "verifying"]
+            steps = ["scoping", "planning", "collaboration", "executing", "verifying"]
             handlers = {
                 "scoping": lambda: self._phase_scoping(run_id),
                 "planning": lambda: self._phase_planning(run_id),
+                "collaboration": lambda: self._phase_collaboration(run_id),
                 "executing": lambda: self._phase_executing(run_id),
                 "verifying": lambda: self._phase_verifying(run_id, job_id),
             }
@@ -91,6 +93,88 @@ class Orchestrator:
 
     async def _phase_planning(self, run_id: int) -> JobStepResult:
         await self._emit(run_id, "phase.planning", {"run_id": run_id})
+        return JobStepResult(True)
+
+    async def _phase_collaboration(self, run_id: int) -> JobStepResult:
+        await self._emit(run_id, "phase.collaboration", {"run_id": run_id})
+        with get_session() as session:
+            run = session.get(Run, run_id)
+            if not run:
+                return JobStepResult(False, "run_not_found")
+            setting = session.exec(
+                select(ProjectSetting).where(ProjectSetting.project_id == run.project_id)
+            ).first()
+            policy = (setting.chat_target_policy if setting else None) or "managers"
+            if policy != "team":
+                return JobStepResult(True)
+            existing = session.exec(select(Task).where(Task.run_id == run.id)).first()
+            if existing:
+                return JobStepResult(True)
+            agents = self._get_agents(run.team_id, session)
+        manager = _pick_manager(agents)
+        if not manager or not manager.id:
+            return JobStepResult(True)
+        roles = ", ".join(
+            [agent.display_name or agent.role for agent in agents if agent.display_name or agent.role]
+        )
+        manager_prompt = (
+            "You are the team manager. Provide a short directive that mentions "
+            "relevant teammates with @mentions and outlines next steps.\n"
+            "Then output a JSON object with this schema:\n"
+            "{"
+            '"directive": "string", '
+            '"tasks": ['
+            '{"title":"string","description":"string","acceptance_criteria":"string",'
+            '"assigned_role":"string"}'
+            "]"
+            "}\n\n"
+            f"Team members: {roles}\n"
+            f"Run goal:\n{run.goal}\n"
+        )
+        response = await self.agent_runtime.run_agent(run.id, manager, manager_prompt)
+        response_text = (response.get("content") or "").strip()
+        payload = _extract_json_payload(response_text)
+        directive = payload.get("directive") if payload else None
+        tasks_payload = payload.get("tasks") if payload else []
+        if directive:
+            manager_message = {
+                "agent": manager.display_name or manager.role,
+                "role": manager.role,
+                "content": directive,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+            self.artifact_store.write_chat(run.id, manager.role, manager_message)
+            await self._emit(run.id, "chat.message", manager_message)
+        created_tasks = 0
+        with get_session() as session:
+            for item in tasks_payload or []:
+                if not isinstance(item, dict):
+                    continue
+                title = str(item.get("title") or "").strip()
+                if not title:
+                    continue
+                task = Task(
+                    run_id=run.id,
+                    title=title,
+                    description=str(item.get("description") or "") or None,
+                    acceptance_criteria=str(item.get("acceptance_criteria") or "") or None,
+                    assigned_role=str(item.get("assigned_role") or "") or None,
+                )
+                session.add(task)
+                session.commit()
+                session.refresh(task)
+                created_tasks += 1
+                await self._emit(
+                    run.id,
+                    "task.created",
+                    {
+                        "task_id": task.id,
+                        "title": task.title,
+                        "assigned_role": task.assigned_role,
+                    },
+                )
+        if created_tasks == 0:
+            return JobStepResult(True, "no_tasks_created")
         return JobStepResult(True)
 
     async def _phase_executing(self, run_id: int) -> JobStepResult:
@@ -194,3 +278,27 @@ class Orchestrator:
             session.commit()
             session.refresh(task)
             return task
+
+
+def _pick_manager(agents: list[AgentConfig]) -> AgentConfig | None:
+    for agent in agents:
+        if agent.role in {"Product Owner", "Delivery Manager", "Release Manager"}:
+            return agent
+    return agents[0] if agents else None
+
+
+def _extract_json_payload(text: str) -> dict | None:
+    if not text:
+        return None
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    snippet = text[start : end + 1]
+    try:
+        data = json.loads(snippet)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        return None
+    return None

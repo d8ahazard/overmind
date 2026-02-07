@@ -21,6 +21,7 @@ export default function Chat() {
   const [message, setMessage] = useState("");
   const [connected, setConnected] = useState(false);
   const [typing, setTyping] = useState(false);
+  const [pendingAgents, setPendingAgents] = useState([] as string[]);
   const [attachment, setAttachment] = useState(null as File | null);
   const [error, setError] = useState(null as string | null);
   const fileInputRef = useRef(null as HTMLInputElement | null);
@@ -41,6 +42,12 @@ export default function Chat() {
           seenMessageIdsRef.current.add(msgId);
         }
         setEvents((prev: EventMessage[]) => [...prev.slice(-200), payload]);
+        if (payload?.type === "chat.message") {
+          const agent = String(payload?.payload?.agent ?? "");
+          if (agent && agent !== "Stakeholder") {
+            setPendingAgents((prev) => prev.filter((name) => name !== agent));
+          }
+        }
       } catch {
         // ignore
       }
@@ -62,6 +69,10 @@ export default function Chat() {
     };
     void loadRuns();
   }, []);
+
+  useEffect(() => {
+    setTyping(pendingAgents.length > 0);
+  }, [pendingAgents]);
 
   useEffect(() => {
     const loadHistory = async () => {
@@ -126,9 +137,16 @@ export default function Chat() {
       payload.run_id = runId;
     }
     try {
-      const result = (await apiPost("/chat/send", payload)) as { run_id?: number };
+      const result = (await apiPost("/chat/send", payload)) as {
+        run_id?: number;
+        targets?: string[];
+      };
       if (result.run_id && !runId) {
         setRunId(result.run_id);
+      }
+      if (result.targets?.length) {
+        setPendingAgents(result.targets);
+        setTyping(true);
       }
       setMessage("");
     } catch (err) {
@@ -214,7 +232,13 @@ export default function Chat() {
               </div>
             )
           )}
-          {typing && <div className="muted">Agent is typing…</div>}
+          {typing && (
+            <div className="muted">
+              {pendingAgents.length
+                ? `Awaiting: ${pendingAgents.join(", ")}…`
+                : "Agent is typing…"}
+            </div>
+          )}
         </div>
       </div>
       <div className="card">
@@ -228,9 +252,6 @@ export default function Chat() {
           />
           <button onClick={introTeam} className="secondary">
             Introduce Team
-          </button>
-          <button onClick={() => setTyping(!typing)} className="secondary">
-            Toggle Typing
           </button>
         </div>
         <div className="row" style={{ marginTop: 8, alignItems: "center" }}>
@@ -246,6 +267,12 @@ export default function Chat() {
           <input
             value={message}
             onChange={(e) => setMessage(e.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void sendMessage();
+              }
+            }}
             placeholder="Type a message. Use @Name to target an agent."
             style={{ flex: 1 }}
           />

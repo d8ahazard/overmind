@@ -15,7 +15,9 @@ class ChatRouter:
     def __init__(self) -> None:
         self._mention_pattern = re.compile(r"@([\\w\\-]+)")
 
-    def resolve_targets(self, team_id: int, message: str) -> List[AgentConfig]:
+    def resolve_targets(
+        self, team_id: int, message: str, policy: str = "managers"
+    ) -> List[AgentConfig]:
         mention = self._extract_mention(message)
         with get_session() as session:
             agents = list(session.exec(select(AgentConfig).where(AgentConfig.team_id == team_id)))
@@ -27,6 +29,8 @@ class ChatRouter:
                 role = agent.role.lower()
                 if mention == display or mention == role.replace(" ", ""):
                     return [agent]
+        if policy == "team":
+            return agents
         return [agent for agent in agents if agent.role in MANAGER_ROLES]
 
     def _extract_mention(self, message: str) -> Optional[str]:

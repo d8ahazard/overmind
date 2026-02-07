@@ -56,7 +56,16 @@ def pick_best_chat_model(models: Iterable[str]) -> str | None:
 
 def pick_worker_chat_model(models: Iterable[str]) -> str | None:
     return _pick_by_priority(
-        models, ["mini", "nano", "o4-mini", "gpt-4o-mini", "gpt-4.1-mini", "gpt-4o"]
+        models,
+        [
+            "gpt-5-nano",
+            "nano",
+            "mini",
+            "o4-mini",
+            "gpt-4o-mini",
+            "gpt-4.1-mini",
+            "gpt-4o",
+        ],
     )
 
 

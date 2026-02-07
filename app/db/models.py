@@ -26,6 +26,13 @@ class ProjectSetting(SQLModel, table=True):
     allow_all_tools: bool = False
     allow_high_risk: bool = False
     default_tool_scopes: Optional[str] = None
+    chat_target_policy: str = "managers"
+    task_retry_limit: int = 3
+    model_defaults: Optional[str] = None
+    memory_profiles: Optional[str] = None
+    mcp_endpoints: Optional[str] = None
+    mcp_ports: Optional[str] = None
+    enabled_plugins: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -42,6 +49,8 @@ class AgentConfig(SQLModel, table=True):
     team_id: int = Field(foreign_key="team.id")
     display_name: Optional[str] = None
     role: str
+    gender: Optional[str] = None
+    pronouns: Optional[str] = None
     personality: Optional[str] = None
     avatar_url: Optional[str] = None
     memory_summary: Optional[str] = None

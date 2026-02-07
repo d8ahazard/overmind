@@ -95,6 +95,12 @@ class MCPRegistry:
         self._last_refresh = datetime.utcnow().isoformat()
         return resolved
 
+    def set_endpoints(self, endpoints: List[str]) -> None:
+        self._endpoints = endpoints
+
+    def set_ports(self, ports: List[int]) -> None:
+        self._ports = ports
+
 
 async def discover_endpoints(urls: List[str]) -> List[MCPEndpoint]:
     endpoints: List[MCPEndpoint] = []

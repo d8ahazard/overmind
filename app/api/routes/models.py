@@ -56,7 +56,7 @@ async def list_recommended(
     results: Dict[str, dict] = {}
     for provider, ids in grouped.items():
         filtered = filter_chat_models(provider, ids)
-        code = [m for m in filtered if is_code_model(m)]
+        code = [m for m in ids if is_code_model(m)]
         image = [m for m in ids if is_image_model(m)]
         results[provider] = {
             "models": {

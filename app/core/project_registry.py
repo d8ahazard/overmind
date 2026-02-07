@@ -29,6 +29,11 @@ class ProjectRegistry:
     def add_project(self, name: str, repo_local_path: str) -> ProjectEntry:
         data = self._read()
         projects = data.get("projects", [])
+        normalized = str(Path(repo_local_path).resolve())
+        for item in projects:
+            existing_path = str(Path(item.get("repo_local_path", "")).resolve())
+            if existing_path == normalized:
+                return ProjectEntry(**item)
         next_id = max([p["id"] for p in projects], default=0) + 1
         entry = ProjectEntry(id=next_id, name=name, repo_local_path=repo_local_path)
         projects.append(asdict(entry))

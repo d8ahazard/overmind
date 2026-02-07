@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +19,8 @@ from app.core.secrets import SecretsBroker
 from app.core.tool_broker import ToolBroker
 from app.core.verification import NoopVerifier
 from app.core.project_registry import ProjectRegistry, project_data_dir, project_db_url
-from app.db.session import init_db
+from app.db.models import Project
+from app.db.session import get_session, init_db
 from app.core.orchestrator import Orchestrator
 from app.core.manager_loop import ManagerLoop
 from app.core.artifacts import ArtifactStore
@@ -32,15 +34,34 @@ def create_app() -> FastAPI:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
 
     registry = ProjectRegistry(settings.data_dir)
-    active = registry.get_active()
-    if active is None:
-        active = registry.add_project("Default Project", str(settings.default_project_root))
-        registry.set_active(active.id)
-
-    active_root = Path(active.repo_local_path)
-    data_dir = project_data_dir(active_root)
-    data_dir.mkdir(parents=True, exist_ok=True)
-    init_db(project_db_url(active_root))
+    if settings.allow_self_project and os.getenv("AI_DEVTEAM_SELF_ACTIVE", "").lower() == "true":
+        registry.set_active(0)
+    active_id = registry.get_active_id()
+    if active_id == 0 and settings.allow_self_project:
+        active_root = settings.repo_root
+        data_dir = project_data_dir(active_root)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        init_db(project_db_url(active_root))
+        with get_session() as session:
+            existing = session.get(Project, 0)
+            if not existing:
+                session.add(
+                    Project(
+                        id=0,
+                        name="Self",
+                        repo_local_path=str(active_root),
+                    )
+                )
+                session.commit()
+    else:
+        active = registry.get_active()
+        if active is None:
+            active = registry.add_project("Default Project", str(settings.default_project_root))
+            registry.set_active(active.id)
+        active_root = Path(active.repo_local_path)
+        data_dir = project_data_dir(active_root)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        init_db(project_db_url(active_root))
 
     app = FastAPI(title="Overmind Orchestrator")
     app.state.settings = settings
@@ -60,7 +81,7 @@ def create_app() -> FastAPI:
     app.state.verifier = NoopVerifier()
     app.state.secrets_broker = SecretsBroker(settings.encryption_key)
     app.state.project_registry = registry
-    app.state.active_project_id = active.id
+    app.state.active_project_id = 0 if active_id == 0 and settings.allow_self_project else active.id
     app.state.active_project_root = active_root
     app.state.data_dir = data_dir
     app.state.orchestrator = Orchestrator(

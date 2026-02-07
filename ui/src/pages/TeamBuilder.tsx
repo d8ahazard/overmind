@@ -12,6 +12,8 @@ type AgentConfig = {
   team_id: number;
   role: string;
   display_name?: string | null;
+  gender?: string | null;
+  pronouns?: string | null;
   personality?: string | null;
   avatar_url?: string | null;
   provider: string;
@@ -44,23 +46,56 @@ type RecommendedEntry = {
   };
 };
 
+const FALLBACK_PRESETS: Preset[] = [
+  {
+    name: "small",
+    roles: ["Product Owner", "Tech Lead", "Developer", "Developer", "QA Engineer", "Release Manager"]
+  },
+  {
+    name: "medium",
+    roles: [
+      "Product Owner",
+      "Delivery Manager",
+      "Tech Lead",
+      "Developer",
+      "Developer",
+      "Developer",
+      "Developer",
+      "QA Engineer",
+      "QA Engineer",
+      "Release Manager"
+    ]
+  },
+  {
+    name: "large",
+    roles: [
+      "Product Owner",
+      "Delivery Manager",
+      "Tech Lead",
+      "Developer",
+      "Developer",
+      "Developer",
+      "Developer",
+      "Developer",
+      "Developer",
+      "Developer",
+      "QA Engineer",
+      "QA Engineer",
+      "QA Engineer",
+      "Release Manager"
+    ]
+  }
+];
+
 export default function TeamBuilder() {
   const [teams, setTeams] = useState([] as Team[]);
   const [agents, setAgents] = useState([] as AgentConfig[]);
   const [projectId, setProjectId] = useState(1);
   const [name, setName] = useState("Core Team");
   const [teamId, setTeamId] = useState(0);
-  const [displayName, setDisplayName] = useState("Alex");
-  const [role, setRole] = useState("Developer");
-  const [personality, setPersonality] = useState(
-    "Practical, curious, and focused on clean, working code."
-  );
-  const [avatarUrl, setAvatarUrl] = useState("");
-  const [provider, setProvider] = useState("openai");
-  const [model, setModel] = useState("gpt-4");
   const [presetSize, setPresetSize] = useState("medium");
-  const [presetProvider, setPresetProvider] = useState("openai");
-  const [presetModel, setPresetModel] = useState("gpt-4");
+  const [presetProvider, setPresetProvider] = useState("auto");
+  const [presetModel, setPresetModel] = useState("auto");
   const [presets, setPresets] = useState([] as Preset[]);
   const [models, setModels] = useState([] as ModelInfo[]);
   const [providers, setProviders] = useState([] as string[]);
@@ -68,17 +103,27 @@ export default function TeamBuilder() {
   const [error, setError] = useState(null as string | null);
   const [showAllAgents, setShowAllAgents] = useState(false);
   const [showAllModels, setShowAllModels] = useState(false);
+  const [customCounts, setCustomCounts] = useState({
+    "Product Owner": 1,
+    "Delivery Manager": 1,
+    "Tech Lead": 1,
+    Developer: 4,
+    "QA Engineer": 2,
+    "Release Manager": 1
+  });
 
   useEffect(() => {
     const load = async () => {
+      let activeId = projectId;
       try {
         const active = (await apiGet("/projects/active")) as { id: number };
+        activeId = active.id;
         setProjectId(active.id);
       } catch (err) {
         setError((err as Error).message);
       }
       try {
-        const fetchedTeams = (await apiGet("/teams")) as Team[];
+        const fetchedTeams = (await apiGet(`/teams?project_id=${activeId}`)) as Team[];
         setTeams(fetchedTeams);
         if (fetchedTeams.length > 0 && fetchedTeams[0].id) {
           setTeamId(fetchedTeams[0].id);
@@ -121,45 +166,13 @@ export default function TeamBuilder() {
     setAgents(data);
   };
 
-  const createTeam = async () => {
-    setError(null);
-    try {
-      const created = (await apiPost("/teams", {
-        project_id: projectId,
-        name
-      })) as Team;
-      setTeams((prev: Team[]) => [...prev, created]);
-      if (created.id) {
-        setTeamId(created.id);
-      }
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  };
-
-  const createAgent = async () => {
-    setError(null);
-    if (!teamId) {
-      setError("Select a team before adding an agent.");
-      return;
-    }
-    if (!provider || !model) {
-      setError("Select a provider and model before adding an agent.");
-      return;
-    }
-    try {
-      const created = (await apiPost("/agents", {
-        team_id: teamId,
-        display_name: displayName,
-        role,
-        personality,
-        avatar_url: avatarUrl || null,
-        provider,
-        model
-      })) as AgentConfig;
-      setAgents((prev: AgentConfig[]) => [...prev, created]);
-    } catch (err) {
-      setError((err as Error).message);
+  const refreshTeams = async () => {
+    const data = (await apiGet(`/teams?project_id=${projectId}`)) as Team[];
+    setTeams(data);
+    if (data.length > 0 && data[0].id) {
+      setTeamId(data[0].id);
+    } else {
+      setTeamId(0);
     }
   };
 
@@ -181,17 +194,18 @@ export default function TeamBuilder() {
       setError("Create or select a valid team before applying a preset.");
       return;
     }
-    if (!presetProvider || !presetModel) {
-      setError("Select a provider and model before applying a preset.");
-      return;
-    }
     try {
-      await apiPost(`/teams/${teamId}/apply-preset`, {
+      const payload: Record<string, unknown> = {
         size: presetSize,
         provider: presetProvider,
         model: presetModel
-      });
+      };
+      if (presetSize === "custom") {
+        payload.role_counts = customCounts;
+      }
+      await apiPost(`/teams/${teamId}/apply-preset`, payload);
       await refreshAgents();
+      await refreshTeams();
     } catch (err) {
       setError((err as Error).message);
     }
@@ -199,10 +213,6 @@ export default function TeamBuilder() {
 
   const createTeamFromPreset = async () => {
     setError(null);
-    if (!presetProvider || !presetModel) {
-      setError("Select a provider and model before applying a preset.");
-      return;
-    }
     try {
       const created = (await apiPost("/teams", {
         project_id: projectId,
@@ -211,13 +221,29 @@ export default function TeamBuilder() {
       setTeams((prev: Team[]) => [...prev, created]);
       if (created.id) {
         setTeamId(created.id);
-        await apiPost(`/teams/${created.id}/apply-preset`, {
+        const payload: Record<string, unknown> = {
           size: presetSize,
           provider: presetProvider,
           model: presetModel
-        });
+        };
+        if (presetSize === "custom") {
+          payload.role_counts = customCounts;
+        }
+        await apiPost(`/teams/${created.id}/apply-preset`, payload);
         await refreshAgents();
+        await refreshTeams();
       }
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const deleteTeam = async (id: number) => {
+    setError(null);
+    try {
+      await apiDelete(`/teams/${id}`);
+      await refreshTeams();
+      await refreshAgents();
     } catch (err) {
       setError((err as Error).message);
     }
@@ -266,10 +292,9 @@ export default function TeamBuilder() {
     return Array.from(new Set(merged));
   };
 
-  const presetModelOptions = modelOptionsFor(presetProvider, "Manager", presetModel);
-  const agentModelOptions = modelOptionsFor(provider, role, model);
+  const presetModelOptions =
+    presetProvider === "auto" ? [] : modelOptionsFor(presetProvider, "Manager", presetModel);
   const hasModelsForPreset = presetModelOptions.length > 0;
-  const hasModelsForAgent = agentModelOptions.length > 0;
 
   const suggestModel = (roleName: string, providerName: string) => {
     const defaults = recommended?.[providerName]?.defaults;
@@ -327,34 +352,75 @@ export default function TeamBuilder() {
     return available[0];
   };
 
+  const countRoles = (teamIdValue: number) => {
+    const counts: Record<string, number> = {};
+    agents
+      .filter((agent: AgentConfig) => agent.team_id === teamIdValue)
+      .forEach((agent: AgentConfig) => {
+        counts[agent.role] = (counts[agent.role] ?? 0) + 1;
+      });
+    return counts;
+  };
+
+  const inferSizeLabel = (counts: Record<string, number>) => {
+    const source = presets.length ? presets : FALLBACK_PRESETS;
+    for (const preset of source) {
+      const target: Record<string, number> = {};
+      preset.roles.forEach((role: string) => {
+        target[role] = (target[role] ?? 0) + 1;
+      });
+      const keys = new Set([...Object.keys(target), ...Object.keys(counts)]);
+      let matches = true;
+      keys.forEach((key) => {
+        if ((target[key] ?? 0) !== (counts[key] ?? 0)) {
+          matches = false;
+        }
+      });
+      if (matches) {
+        return preset.name;
+      }
+    }
+    return "custom";
+  };
+
   return (
     <section>
       <h2>Team Builder</h2>
-      <div className="card">
-        <h3>Create Team</h3>
-        <div className="row">
-          <input
-            type="number"
-            value={projectId}
-            onChange={(e) => setProjectId(Number(e.target.value))}
-          />
-          <input value={name} onChange={(e) => setName(e.target.value)} />
-          <button onClick={createTeam}>Create</button>
-        </div>
-      </div>
       {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
       <div className="card">
         <h3>Teams</h3>
         <ul>
-          {teams.map((team: Team) => (
-            <li key={team.id}>
-              {team.name} <span className="pill">Project {team.project_id}</span>
-            </li>
-          ))}
+          {teams.map((team: Team) => {
+            const counts = team.id ? countRoles(team.id) : {};
+            const sizeLabel = inferSizeLabel(counts);
+            const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
+            const breakdown = Object.entries(counts)
+              .map(([roleName, count]) => `${roleName}: ${count}`)
+              .join(" · ");
+            return (
+              <li key={team.id}>
+                <div className="row" style={{ alignItems: "center" }}>
+                  <button
+                    className={team.id === teamId ? "secondary" : "pill"}
+                    onClick={() => team.id && setTeamId(team.id)}
+                  >
+                    {team.name}
+                  </button>
+                  <span className="pill">Project {team.project_id}</span>{" "}
+                  <span className="pill">{sizeLabel}</span>{" "}
+                  <span className="pill">{total} members</span>
+                  {team.id && (
+                    <button className="danger" onClick={() => deleteTeam(team.id as number)}>
+                      Delete
+                    </button>
+                  )}
+                </div>
+                {breakdown && <div className="muted">{breakdown}</div>}
+              </li>
+            );
+          })}
         </ul>
-      </div>
-      <div className="card">
-        <h3>Apply Team Preset</h3>
+        <h4 style={{ marginTop: 16 }}>Team Setup</h4>
         <div className="row">
           <label className="pill">Team</label>
           <select
@@ -368,6 +434,11 @@ export default function TeamBuilder() {
               </option>
             ))}
           </select>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="New team name"
+          />
           <label className="pill">Preset</label>
           <select value={presetSize} onChange={(e) => setPresetSize(e.target.value)}>
             {presets.length ? (
@@ -383,15 +454,39 @@ export default function TeamBuilder() {
                 <option value="large">Large</option>
               </>
             )}
+            <option value="custom">Custom</option>
           </select>
+          {presetSize === "custom" && (
+            <div className="row">
+              {(Object.entries(customCounts) as [string, number][]).map(([roleName, count]) => (
+                <label key={roleName} className="pill">
+                  {roleName}
+                  <input
+                    type="number"
+                    min={0}
+                    value={count}
+                    onChange={(e) =>
+                      setCustomCounts((prev: typeof customCounts) => ({
+                        ...prev,
+                        [roleName]: Number(e.target.value)
+                      }))
+                    }
+                    style={{ width: 72, marginLeft: 6 }}
+                  />
+                </label>
+              ))}
+            </div>
+          )}
           {hasProviders ? (
             <select
               value={presetProvider}
               onChange={(e) => {
-                setPresetProvider(e.target.value);
-                setPresetModel(suggestModel("Developer", e.target.value));
+                const value = e.target.value;
+                setPresetProvider(value);
+                setPresetModel(value === "auto" ? "auto" : suggestModel("Developer", value));
               }}
             >
+              <option value="auto">Auto</option>
               {providers.map((providerName: string) => (
                 <option key={providerName} value={providerName}>
                   {providerName}
@@ -405,7 +500,9 @@ export default function TeamBuilder() {
               placeholder="Provider"
             />
           )}
-          {hasModelsForPreset ? (
+          {presetProvider === "auto" ? (
+            <input value="auto" disabled />
+          ) : hasModelsForPreset ? (
             <select value={presetModel} onChange={(e) => setPresetModel(e.target.value)}>
               {presetModelOptions.map((modelId: string) => (
                 <option key={modelId} value={modelId}>
@@ -429,76 +526,7 @@ export default function TeamBuilder() {
         </div>
       </div>
       <div className="card">
-        <h3>Add Agent</h3>
-        <div className="row">
-          <select
-            value={teamId}
-            onChange={(e) => setTeamId(Number(e.target.value))}
-          >
-            <option value={0}>Select team</option>
-            {teams.map((team: Team) => (
-              <option key={team.id} value={team.id}>
-                {team.name} (#{team.id})
-              </option>
-            ))}
-          </select>
-          <input
-            value={displayName}
-            onChange={(e) => setDisplayName(e.target.value)}
-            placeholder="Name"
-          />
-          <input value={role} onChange={(e) => setRole(e.target.value)} />
-          <input
-            value={personality}
-            onChange={(e) => setPersonality(e.target.value)}
-            placeholder="Personality"
-          />
-        <input
-          value={avatarUrl}
-          onChange={(e) => setAvatarUrl(e.target.value)}
-          placeholder="Avatar URL"
-        />
-          {hasProviders ? (
-            <select
-              value={provider}
-              onChange={(e) => {
-                setProvider(e.target.value);
-                setModel(suggestModel(role, e.target.value));
-              }}
-            >
-              {providers.map((providerName: string) => (
-                <option key={providerName} value={providerName}>
-                  {providerName}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <input
-              value={provider}
-              onChange={(e) => setProvider(e.target.value)}
-              placeholder="Provider"
-            />
-          )}
-          {hasModelsForAgent ? (
-            <select value={model} onChange={(e) => setModel(e.target.value)}>
-              {agentModelOptions.map((modelId: string) => (
-                <option key={modelId} value={modelId}>
-                  {modelId}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <input
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder="Model"
-            />
-          )}
-          <button onClick={createAgent}>Add Agent</button>
-        </div>
-      </div>
-      <div className="card">
-        <h3>Agents</h3>
+        <h3>Agents {teamId ? `(Team #${teamId})` : ""}</h3>
         <div className="row" style={{ gap: 12, flexWrap: "wrap", marginBottom: 8 }}>
           <label className="pill">
             <input
@@ -547,6 +575,39 @@ export default function TeamBuilder() {
                     }
                     onBlur={() => agent.id && updateAgentById(agent.id)}
                     placeholder="Name"
+                  />
+                  <select
+                    value={agent.gender ?? ""}
+                    onChange={(e) =>
+                      setAgents((prev: AgentConfig[]) =>
+                        prev.map((item: AgentConfig) =>
+                          item.id === agent.id
+                            ? { ...item, gender: e.target.value }
+                            : item
+                        )
+                      )
+                    }
+                    onBlur={() => agent.id && updateAgentById(agent.id)}
+                  >
+                    <option value="">Gender</option>
+                    <option value="female">Female</option>
+                    <option value="male">Male</option>
+                    <option value="nonbinary">Non-binary</option>
+                    <option value="other">Other</option>
+                  </select>
+                  <input
+                    value={agent.pronouns ?? ""}
+                    onChange={(e) =>
+                      setAgents((prev: AgentConfig[]) =>
+                        prev.map((item: AgentConfig) =>
+                          item.id === agent.id
+                            ? { ...item, pronouns: e.target.value }
+                            : item
+                        )
+                      )
+                    }
+                    onBlur={() => agent.id && updateAgentById(agent.id)}
+                    placeholder="Pronouns"
                   />
                   <input
                     value={agent.role}

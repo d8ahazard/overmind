@@ -8,7 +8,7 @@ from sqlmodel import select
 from app.core.events import Event, EventBus
 from app.core.chat_router import MANAGER_ROLES
 from app.core.tool_broker import ToolRequest
-from app.db.models import AgentConfig, Run, Task, Team
+from app.db.models import AgentConfig, ProjectSetting, Run, Task, Team
 from app.db.session import get_session
 
 
@@ -62,7 +62,16 @@ class ManagerLoop:
             task = session.get(Task, task_id)
             if not task or task.status != "pending":
                 return
-            if task.attempts >= 3:
+            run = session.get(Run, task.run_id)
+            if not run:
+                return
+            retry_limit = 3
+            setting = session.exec(
+                select(ProjectSetting).where(ProjectSetting.project_id == run.project_id)
+            ).first()
+            if setting and setting.task_retry_limit:
+                retry_limit = max(1, int(setting.task_retry_limit))
+            if task.attempts >= retry_limit:
                 task.status = "failed"
                 task.updated_at = datetime.utcnow()
                 session.add(task)
@@ -70,11 +79,8 @@ class ManagerLoop:
                 await self._emit(
                     task.run_id,
                     "task.failed",
-                    {"task_id": task.id, "reason": "max_attempts"},
+                    {"task_id": task.id, "reason": f"max_attempts:{retry_limit}"},
                 )
-                return
-            run = session.get(Run, task.run_id)
-            if not run:
                 return
             team = session.get(Team, run.team_id)
             agents = list(session.exec(select(AgentConfig).where(AgentConfig.team_id == team.id)))
@@ -98,6 +104,7 @@ class ManagerLoop:
         prompt = (
             f"Task: {task.title}\n"
             f"Details: {task.description or ''}\n"
+            "Coordinate with teammates using @mentions when needed.\n"
             "If a tool is required, respond with ONLY JSON:\n"
             '{\"tool\":\"system.run\",\"arguments\":{\"command\":\"whoami\"}}'
         )
@@ -108,6 +115,14 @@ class ManagerLoop:
             response_text = await self._execute_tool_call(
                 tool_call, assigned, run.id
             )
+        worker_message = {
+            "agent": assigned.display_name or assigned.role,
+            "role": assigned.role,
+            "content": response_text,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+        self.artifact_store.write_chat(run.id, assigned.role, worker_message)
+        await self._emit(run.id, "chat.message", worker_message)
 
         review_text = response_text
         if manager:
@@ -116,10 +131,19 @@ class ManagerLoop:
                 f"Assigned role: {assigned.role}\n"
                 f"Worker output: {response_text}\n\n"
                 "If acceptable, respond with ONLY: APPROVED.\n"
-                "If rework is needed, respond with ONLY: RETRY and a brief reason."
+                "If rework is needed, respond with ONLY: RETRY and a brief reason.\n"
+                "If delegating follow-up, mention teammates with @mentions."
             )
             review = await self.agent_runtime.run_agent(run.id, manager, review_prompt)
             review_text = (review.get("content") or "").strip()
+            review_message = {
+                "agent": manager.display_name or manager.role,
+                "role": manager.role,
+                "content": review_text,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+            self.artifact_store.write_chat(run.id, manager.role, review_message)
+            await self._emit(run.id, "chat.message", review_message)
             await self._emit(
                 run.id,
                 "task.reviewed",

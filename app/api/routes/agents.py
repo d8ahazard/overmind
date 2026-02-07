@@ -8,6 +8,7 @@ from app.db.models import AgentConfig
 from app.db.session import get_session
 from app.providers.model_registry import ModelRegistry
 from app.core.chat_router import MANAGER_ROLES
+from app.core.presets import generate_avatar_url, is_broken_avatar_url, pick_avatar_url
 
 router = APIRouter()
 
@@ -35,7 +36,18 @@ def create_agent(agent: AgentConfig) -> AgentConfig:
 @router.get("/", response_model=List[AgentConfig])
 def list_agents() -> List[AgentConfig]:
     with get_session() as session:
-        return list(session.exec(select(AgentConfig)))
+        agents = list(session.exec(select(AgentConfig)))
+        updated = False
+        for agent in agents:
+            if is_broken_avatar_url(agent.avatar_url):
+                agent.avatar_url = generate_avatar_url(agent.display_name or "agent")
+                session.add(agent)
+                updated = True
+        if updated:
+            session.commit()
+            for agent in agents:
+                session.refresh(agent)
+        return agents
 
 
 @router.put("/{agent_id}", response_model=AgentConfig)
@@ -52,6 +64,8 @@ def update_agent(agent_id: int, data: AgentUpdate) -> AgentConfig:
             agent.personality = data.personality
         if data.avatar_url is not None:
             agent.avatar_url = data.avatar_url
+            if is_broken_avatar_url(agent.avatar_url):
+                agent.avatar_url = generate_avatar_url(agent.display_name or "agent")
         if data.provider is not None:
             agent.provider = data.provider
         if data.model is not None:
@@ -90,6 +104,11 @@ def get_agent(agent_id: int) -> AgentConfig:
         agent = session.get(AgentConfig, agent_id)
         if not agent:
             raise HTTPException(status_code=404, detail="Agent not found")
+        if is_broken_avatar_url(agent.avatar_url):
+            agent.avatar_url = generate_avatar_url(agent.display_name or "agent")
+            session.add(agent)
+            session.commit()
+            session.refresh(agent)
         return agent
 
 

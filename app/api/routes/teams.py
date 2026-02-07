@@ -1,8 +1,9 @@
-from typing import List
+from typing import List, Dict, Tuple
+import json
 
 import json
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from sqlmodel import select
 
 from app.core.presets import PRESETS, build_agents
@@ -10,9 +11,11 @@ from app.providers.model_registry import ModelRegistry
 from app.providers.model_filters import (
     filter_chat_models,
     is_chat_model,
+    pick_best_chat_model,
+    pick_code_chat_model,
     pick_worker_chat_model,
 )
-from app.db.models import ProjectSetting, Team
+from app.db.models import AgentConfig, ProjectSetting, ProviderKey, Team
 from app.db.session import get_session
 
 router = APIRouter()
@@ -58,9 +61,12 @@ def create_team(team: Team) -> Team:
 
 
 @router.get("/", response_model=List[Team])
-def list_teams() -> List[Team]:
+def list_teams(project_id: int | None = Query(default=None)) -> List[Team]:
     with get_session() as session:
-        return list(session.exec(select(Team)))
+        query = select(Team)
+        if project_id is not None:
+            query = query.where(Team.project_id == project_id)
+        return list(session.exec(query))
 
 
 @router.get("/{team_id}", response_model=Team)
@@ -72,11 +78,26 @@ def get_team(team_id: int) -> Team:
         return team
 
 
+@router.delete("/{team_id}")
+def delete_team(team_id: int) -> dict:
+    with get_session() as session:
+        team = session.get(Team, team_id)
+        if not team:
+            raise HTTPException(status_code=404, detail="Team not found")
+        agents = list(session.exec(select(AgentConfig).where(AgentConfig.team_id == team_id)))
+        for agent in agents:
+            session.delete(agent)
+        session.delete(team)
+        session.commit()
+    return {"status": "deleted", "team_id": team_id}
+
+
 @router.post("/{team_id}/apply-preset")
 async def apply_preset(team_id: int, payload: dict, request: Request) -> dict:
     size = payload.get("size", "medium")
-    provider = payload.get("provider", "openai")
-    model = payload.get("model", "gpt-4")
+    provider = payload.get("provider")
+    model = payload.get("model")
+    role_counts = payload.get("role_counts")
     generate_profiles = payload.get("generate_profiles")
     if generate_profiles is None:
         generate_profiles = request.app.state.settings.generate_profiles
@@ -86,26 +107,38 @@ async def apply_preset(team_id: int, payload: dict, request: Request) -> dict:
         team = session.get(Team, team_id)
         if not team:
             raise HTTPException(status_code=404, detail="Team not found")
-        if not is_chat_model(provider, model):
-            models = await ModelRegistry(request.app.state.secrets_broker).list_models(
-                provider=provider, enabled=[provider]
-            )
+        enabled = [item.provider for item in session.exec(select(ProviderKey))]
+        registry = ModelRegistry(request.app.state.secrets_broker)
+        provider = None if provider in {"auto", ""} else provider
+        model = None if model in {"auto", ""} else model
+        if provider and model and not is_chat_model(provider, model):
+            models = await registry.list_models(provider=provider, enabled=[provider])
             chat_models = filter_chat_models(provider, [item.id for item in models])
             model = pick_worker_chat_model(chat_models) or model
-        agents = build_agents(team_id, size, provider, model)
+        defaults = _parse_role_defaults(setting.model_defaults if setting else None)
+        role_models = await _build_role_models(
+            registry, enabled, provider, model, role_counts, defaults
+        )
+        fallback_provider = provider or (enabled[0] if enabled else "openai")
+        fallback_model = model or "gpt-4"
+        agents = build_agents(
+            team_id,
+            size,
+            fallback_provider,
+            fallback_model,
+            role_counts=role_counts,
+            role_models=role_models,
+        )
         setting = session.exec(
             select(ProjectSetting).where(ProjectSetting.project_id == team.project_id)
         ).first()
         default_scopes = (setting.default_tool_scopes if setting else None) or "system:run"
-        manager_model = await ModelRegistry(request.app.state.secrets_broker).suggest_manager_model(provider)
         for agent in agents:
             agent.permissions = default_scopes
-            if manager_model and agent.role in {"Product Owner", "Delivery Manager", "Release Manager"}:
-                agent.model = manager_model
         if generate_profiles:
             for agent in agents:
                 display_name, personality = await _generate_profile(
-                    request, agent.role, provider, model
+                    request, agent.role, agent.provider, agent.model
                 )
                 if display_name:
                     agent.display_name = display_name
@@ -114,3 +147,73 @@ async def apply_preset(team_id: int, payload: dict, request: Request) -> dict:
         session.add_all(agents)
         session.commit()
     return {"status": "ok", "count": len(agents)}
+
+
+async def _build_role_models(
+    registry: ModelRegistry,
+    enabled: List[str],
+    provider: str | None,
+    model: str | None,
+    role_counts: dict | None,
+    defaults: Dict[str, Dict[str, str]] | None = None,
+) -> Dict[str, Tuple[str, str]]:
+    if provider and model:
+        return {}
+    if not enabled:
+        return {}
+    role_models: Dict[str, Tuple[str, str]] = {}
+    provider_models: Dict[str, List[str]] = {}
+    provider_chat: Dict[str, List[str]] = {}
+    for item in enabled:
+        models = await registry.list_models(provider=item, enabled=[item])
+        all_ids = [model.id for model in models]
+        provider_models[item] = all_ids
+        provider_chat[item] = filter_chat_models(item, all_ids)
+    roles = set(role_counts.keys()) if isinstance(role_counts, dict) else set()
+    roles.update(PRESETS["medium"].roles)
+    for role in roles:
+        if defaults and role in defaults:
+            entry = defaults.get(role) or {}
+            provider_name = entry.get("provider")
+            model_id = entry.get("model")
+            if provider_name and model_id:
+                role_models[role] = (provider_name, model_id)
+                continue
+        role_lower = role.lower()
+        needs_code = "developer" in role_lower or "engineer" in role_lower
+        for provider_name in enabled:
+            candidates = provider_models.get(provider_name, [])
+            chat_candidates = provider_chat.get(provider_name, [])
+            if not candidates and not chat_candidates:
+                continue
+            picked = None
+            if needs_code:
+                picked = pick_code_chat_model(candidates)
+            if not picked:
+                picked = pick_worker_chat_model(chat_candidates)
+            if not picked:
+                picked = pick_best_chat_model(chat_candidates)
+            if picked:
+                role_models[role] = (provider_name, picked)
+                break
+    return role_models
+
+
+def _parse_role_defaults(raw: str | None) -> Dict[str, Dict[str, str]]:
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    results: Dict[str, Dict[str, str]] = {}
+    for key, value in data.items():
+        if not isinstance(value, dict):
+            continue
+        provider_name = value.get("provider")
+        model_id = value.get("model")
+        if provider_name and model_id:
+            results[str(key)] = {"provider": str(provider_name), "model": str(model_id)}
+    return results

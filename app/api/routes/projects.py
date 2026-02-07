@@ -22,6 +22,13 @@ def _get_setting(session, project_id: int) -> ProjectSetting:
             allow_all_tools=False,
             allow_high_risk=False,
             default_tool_scopes=None,
+            model_defaults=None,
+            memory_profiles=None,
+            mcp_endpoints=None,
+            mcp_ports=None,
+            enabled_plugins=None,
+            chat_target_policy="managers",
+            task_retry_limit=3,
         )
         session.add(setting)
         session.commit()
@@ -159,6 +166,13 @@ def get_project_settings(request: Request) -> dict:
         "allow_all_tools": setting.allow_all_tools,
         "allow_high_risk": setting.allow_high_risk,
         "default_tool_scopes": setting.default_tool_scopes,
+        "chat_target_policy": setting.chat_target_policy,
+        "task_retry_limit": setting.task_retry_limit,
+        "model_defaults": setting.model_defaults,
+        "memory_profiles": setting.memory_profiles,
+        "mcp_endpoints": setting.mcp_endpoints,
+        "mcp_ports": setting.mcp_ports,
+        "enabled_plugins": setting.enabled_plugins,
     }
 
 
@@ -170,6 +184,13 @@ def update_project_settings(payload: dict, request: Request) -> dict:
     allow_all_tools = payload.get("allow_all_tools")
     allow_high_risk = payload.get("allow_high_risk")
     default_tool_scopes = payload.get("default_tool_scopes")
+    chat_target_policy = payload.get("chat_target_policy")
+    task_retry_limit = payload.get("task_retry_limit")
+    model_defaults = payload.get("model_defaults")
+    memory_profiles = payload.get("memory_profiles")
+    mcp_endpoints = payload.get("mcp_endpoints")
+    mcp_ports = payload.get("mcp_ports")
+    enabled_plugins = payload.get("enabled_plugins")
     with get_session() as session:
         setting = _get_setting(session, project_id)
         if allow_all_tools is not None:
@@ -178,6 +199,23 @@ def update_project_settings(payload: dict, request: Request) -> dict:
             setting.allow_high_risk = bool(allow_high_risk)
         if default_tool_scopes is not None:
             setting.default_tool_scopes = str(default_tool_scopes) or None
+        if chat_target_policy is not None:
+            setting.chat_target_policy = str(chat_target_policy)
+        if task_retry_limit is not None:
+            try:
+                setting.task_retry_limit = max(1, int(task_retry_limit))
+            except (TypeError, ValueError):
+                setting.task_retry_limit = 3
+        if model_defaults is not None:
+            setting.model_defaults = str(model_defaults) or None
+        if memory_profiles is not None:
+            setting.memory_profiles = str(memory_profiles) or None
+        if mcp_endpoints is not None:
+            setting.mcp_endpoints = str(mcp_endpoints) or None
+        if mcp_ports is not None:
+            setting.mcp_ports = str(mcp_ports) or None
+        if enabled_plugins is not None:
+            setting.enabled_plugins = str(enabled_plugins) or None
         session.add(setting)
         session.commit()
         session.refresh(setting)
@@ -188,4 +226,11 @@ def update_project_settings(payload: dict, request: Request) -> dict:
         "allow_all_tools": setting.allow_all_tools,
         "allow_high_risk": setting.allow_high_risk,
         "default_tool_scopes": setting.default_tool_scopes,
+        "chat_target_policy": setting.chat_target_policy,
+        "task_retry_limit": setting.task_retry_limit,
+        "model_defaults": setting.model_defaults,
+        "memory_profiles": setting.memory_profiles,
+        "mcp_endpoints": setting.mcp_endpoints,
+        "mcp_ports": setting.mcp_ports,
+        "enabled_plugins": setting.enabled_plugins,
     }
